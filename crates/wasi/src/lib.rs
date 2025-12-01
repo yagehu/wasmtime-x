@@ -21,6 +21,8 @@ pub mod filesystem;
 pub mod p0;
 #[cfg(feature = "p1")]
 pub mod p1;
+#[cfg(feature = "p1")]
+pub mod p1_memory64;
 // FIXME: should gate this module on the `p2` feature but that will require more
 // internal refactoring to get that aligned right.
 // #[cfg(feature = "p2")]

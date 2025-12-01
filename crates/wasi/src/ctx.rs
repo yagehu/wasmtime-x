@@ -469,6 +469,12 @@ impl WasiCtxBuilder {
         let wasi = self.build();
         crate::p1::WasiP1Ctx::new(wasi)
     }
+
+    #[cfg(feature = "p1")]
+    pub fn build_p1_memory64(&mut self) -> crate::p1_memory64::WasiP1Ctx {
+        let wasi = self.build();
+        crate::p1_memory64::WasiP1Ctx::new(wasi)
+    }
 }
 
 /// Per-[`Store`] state which holds state necessary to implement WASI from this

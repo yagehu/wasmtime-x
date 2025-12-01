@@ -864,7 +864,15 @@ impl RunCommand {
                             if self.run.common.wasi.preview0 != Some(false) {
                                 wasmtime_wasi::p0::add_to_linker_async(linker, |t| t.wasip1_ctx())?;
                             }
-                            wasmtime_wasi::p1::add_to_linker_async(linker, |t| t.wasip1_ctx())?;
+
+                            if self.run.common.wasm.memory64.unwrap_or(false) {
+                                wasmtime_wasi::p1_memory64::add_to_linker_async(linker, |t| {
+                                    t.wasip1_memory64_ctx()
+                                })?;
+                            } else {
+                                wasmtime_wasi::p1::add_to_linker_async(linker, |t| t.wasip1_ctx())?;
+                            }
+
                             self.set_wasi_ctx(store)?;
                         }
                     }
@@ -1131,6 +1139,14 @@ impl RunCommand {
         self.run.configure_wasip2(&mut builder)?;
         let ctx = builder.build_p1();
         store.data_mut().wasip1_ctx = Some(Arc::new(Mutex::new(ctx)));
+
+        let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
+        builder.inherit_stdio().args(&self.compute_argv()?);
+        self.run.configure_wasip2(&mut builder)?;
+        let ctx = builder.build_p1_memory64();
+
+        store.data_mut().wasip1_memory64_ctx = Some(Arc::new(Mutex::new(ctx)));
+
         Ok(())
     }
 
@@ -1180,6 +1196,8 @@ pub struct Host {
     // access.
     wasip1_ctx: Option<Arc<Mutex<wasmtime_wasi::p1::WasiP1Ctx>>>,
 
+    wasip1_memory64_ctx: Option<Arc<Mutex<wasmtime_wasi::p1_memory64::WasiP1Ctx>>>,
+
     #[cfg(feature = "wasi-nn")]
     wasi_nn_wit: Option<Arc<wasmtime_wasi_nn::wit::WasiNnCtx>>,
     #[cfg(feature = "wasi-nn")]
@@ -1210,6 +1228,10 @@ pub struct Host {
 impl Host {
     fn wasip1_ctx(&mut self) -> &mut wasmtime_wasi::p1::WasiP1Ctx {
         unwrap_singlethread_context(&mut self.wasip1_ctx)
+    }
+
+    fn wasip1_memory64_ctx(&mut self) -> &mut wasmtime_wasi::p1_memory64::WasiP1Ctx {
+        unwrap_singlethread_context(&mut self.wasip1_memory64_ctx)
     }
 }
 
