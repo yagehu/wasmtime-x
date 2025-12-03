@@ -16,9 +16,11 @@ pub struct Config {
     pub wasmtime: bool,
     pub tracing: TracingConf,
     pub mutable: bool,
+    pub abi: AbiConf,
 }
 
 mod kw {
+    syn::custom_keyword!(abi);
     syn::custom_keyword!(witx);
     syn::custom_keyword!(witx_literal);
     syn::custom_keyword!(block_on);
@@ -39,6 +41,7 @@ pub enum ConfigField {
     Wasmtime(bool),
     Tracing(TracingConf),
     Mutable(bool),
+    Abi(AbiConf),
 }
 
 impl Parse for ConfigField {
@@ -89,6 +92,17 @@ impl Parse for ConfigField {
             input.parse::<kw::mutable>()?;
             input.parse::<Token![:]>()?;
             Ok(ConfigField::Mutable(input.parse::<syn::LitBool>()?.value))
+        } else if lookahead.peek(kw::abi) {
+            input.parse::<kw::abi>()?;
+            input.parse::<Token![:]>()?;
+
+            let abi = input.parse::<syn::LitStr>()?;
+
+            match abi.value().as_str() {
+                "memory32" => Ok(ConfigField::Abi(AbiConf::Memory32)),
+                "memory64" => Ok(ConfigField::Abi(AbiConf::Memory64)),
+                _ => Err(Error::new(abi.span(), "invalid ABI")),
+            }
         } else {
             Err(lookahead.error())
         }
@@ -103,6 +117,8 @@ impl Config {
         let mut wasmtime = None;
         let mut tracing = None;
         let mut mutable = None;
+        let mut abi = None;
+
         for f in fields {
             match f {
                 ConfigField::Witx(c) => {
@@ -141,6 +157,13 @@ impl Config {
                     }
                     mutable = Some(c);
                 }
+                ConfigField::Abi(c) => {
+                    if abi.is_some() {
+                        return Err(Error::new(err_loc, "duplicate `abi` field"));
+                    }
+
+                    abi = Some(c);
+                }
             }
         }
         Ok(Config {
@@ -152,6 +175,7 @@ impl Config {
             wasmtime: wasmtime.unwrap_or(true),
             tracing: tracing.unwrap_or_default(),
             mutable: mutable.unwrap_or(true),
+            abi: abi.unwrap_or(AbiConf::Memory32),
         })
     }
 
@@ -173,6 +197,12 @@ impl Parse for Config {
             contents.parse_terminated(ConfigField::parse, Token![,])?;
         Ok(Config::build(fields.into_iter(), input.span())?)
     }
+}
+
+#[derive(PartialEq, Eq, Copy, Debug, Clone)]
+pub enum AbiConf {
+    Memory32,
+    Memory64,
 }
 
 /// The witx document(s) that will be loaded from a [`Config`](struct.Config.html).

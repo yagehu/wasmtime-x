@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> lists::Lists for WasiCtx<'a> {
+impl<'a> lists::Lists for WasiCtx<'a, u32> {
     fn reduce_excuses(
         &mut self,
         memory: &mut GuestMemory<'_>,
@@ -18,6 +18,7 @@ impl<'a> lists::Lists for WasiCtx<'a> {
             .read(
                 excuses
                     .iter()
+                    .unwrap()
                     .last()
                     .expect("input array is non-empty")
                     .expect("valid ptr to ptr"),
@@ -31,7 +32,7 @@ impl<'a> lists::Lists for WasiCtx<'a> {
         memory: &mut GuestMemory<'_>,
         excuses: types::ExcuseArray,
     ) -> Result<(), types::Errno> {
-        for excuse in excuses.iter() {
+        for excuse in excuses.iter().unwrap() {
             let ptr_to_excuse = memory
                 .read(excuse.expect("valid ptr to ptr"))
                 .expect("valid ptr to some Excuse value");
@@ -93,9 +94,9 @@ impl ReduceExcusesExercise {
 
         // Populate the array with pointers to generated Excuse values
         {
-            let array: GuestPtr<[GuestPtr<types::Excuse>]> =
+            let array: GuestPtr<[GuestPtr<types::Excuse, u32>], u32> =
                 GuestPtr::new((self.array_ptr_loc.ptr, self.excuse_ptr_locs.len() as u32));
-            for (slot, ptr) in array.iter().zip(&self.excuse_ptr_locs) {
+            for (slot, ptr) in array.iter().unwrap().zip(&self.excuse_ptr_locs) {
                 let slot = slot.expect("array should be in bounds");
                 memory
                     .write(slot, GuestPtr::new(ptr.ptr))
@@ -174,11 +175,11 @@ impl PopulateExcusesExercise {
         let mut memory = host_memory.guest_memory();
 
         // Populate array with valid pointers to Excuse type in memory
-        let ptr = GuestPtr::<[GuestPtr<types::Excuse>]>::new((
+        let ptr = GuestPtr::<[GuestPtr<types::Excuse, u32>], u32>::new((
             self.array_ptr_loc.ptr,
             self.elements.len() as u32,
         ));
-        for (ptr, val) in ptr.iter().zip(&self.elements) {
+        for (ptr, val) in ptr.iter().unwrap().zip(&self.elements) {
             memory
                 .write(
                     ptr.expect("should be valid pointer"),
@@ -196,9 +197,9 @@ impl PopulateExcusesExercise {
         .unwrap();
         assert_eq!(res, types::Errno::Ok as i32, "populate excuses errno");
 
-        let arr: GuestPtr<[GuestPtr<types::Excuse>]> =
+        let arr: GuestPtr<[GuestPtr<types::Excuse, u32>], u32> =
             GuestPtr::new((self.array_ptr_loc.ptr, self.elements.len() as u32));
-        for el in arr.iter() {
+        for el in arr.iter().unwrap() {
             let ptr_to_ptr = memory
                 .read(el.expect("valid ptr to ptr"))
                 .expect("valid ptr to some Excuse value");
@@ -219,11 +220,11 @@ proptest! {
     }
 }
 
-impl<'a> array_traversal::ArrayTraversal for WasiCtx<'a> {
+impl<'a> array_traversal::ArrayTraversal for WasiCtx<'a, u32> {
     fn sum_of_element(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        elements: GuestPtr<[types::PairInts]>,
+        elements: GuestPtr<[types::PairInts], u32>,
         index: u32,
     ) -> Result<i32, types::Errno> {
         let elem_ptr = elements.get(index).ok_or(types::Errno::InvalidArg)?;
@@ -235,7 +236,7 @@ impl<'a> array_traversal::ArrayTraversal for WasiCtx<'a> {
     fn sum_of_elements(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        elements: GuestPtr<[types::PairInts]>,
+        elements: GuestPtr<[types::PairInts], u32>,
         start: u32,
         end: u32,
     ) -> Result<i32, types::Errno> {
@@ -243,7 +244,7 @@ impl<'a> array_traversal::ArrayTraversal for WasiCtx<'a> {
             .get_range(start..end)
             .ok_or(types::Errno::InvalidArg)?;
         let mut sum: i32 = 0;
-        for e in elem_range.iter() {
+        for e in elem_range.iter().unwrap() {
             let pair = memory
                 .read(e.map_err(|_| types::Errno::DontWantTo)?)
                 .map_err(|_| types::Errno::PhysicallyUnable)?;
@@ -307,9 +308,11 @@ impl SumElementsExercise {
         let mut memory = host_memory.guest_memory();
 
         // Populate array
-        let ptr =
-            GuestPtr::<[types::PairInts]>::new((self.element_loc.ptr, self.elements.len() as u32));
-        for (ptr, val) in ptr.iter().zip(&self.elements) {
+        let ptr = GuestPtr::<[types::PairInts], u32>::new((
+            self.element_loc.ptr,
+            self.elements.len() as u32,
+        ));
+        for (ptr, val) in ptr.iter().unwrap().zip(&self.elements) {
             memory
                 .write(ptr.expect("should be valid pointer"), val.clone())
                 .expect("failed to write value");
@@ -325,7 +328,7 @@ impl SumElementsExercise {
         )
         .unwrap();
         assert_eq!(res, types::Errno::Ok as i32, "sum_of_element errno");
-        let result_ptr = GuestPtr::<i32>::new(self.return_loc.ptr);
+        let result_ptr = GuestPtr::<i32, u32>::new(self.return_loc.ptr);
         let result = memory.read(result_ptr).expect("read result");
 
         let e = self
@@ -366,7 +369,7 @@ impl SumElementsExercise {
                 types::Errno::Ok as i32,
                 "expected ok sum_of_elements errno"
             );
-            let result_ptr = GuestPtr::<i32>::new(self.return_loc.ptr);
+            let result_ptr = GuestPtr::<i32, u32>::new(self.return_loc.ptr);
             let result = memory.read(result_ptr).expect("read result");
 
             let mut expected_sum: i32 = 0;

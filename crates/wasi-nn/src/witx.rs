@@ -20,7 +20,7 @@ use crate::{Backend, ExecutionContext, Graph, Registry};
 use std::collections::HashMap;
 use std::hash::Hash;
 use thiserror::Error;
-use wiggle::{GuestError, GuestMemory, GuestPtr};
+use wiggle::{GuestError, GuestMemory};
 
 pub use generated::wasi_ephemeral_nn::add_to_linker;
 
@@ -136,7 +136,7 @@ impl generated::wasi_ephemeral_nn::WasiEphemeralNn for WasiNnCtx {
             // Retrieve all of the "builder lists" from the Wasm memory (see
             // $graph_builder_array) as slices for a backend to operate on.
             let mut slices = vec![];
-            for builder in builders.iter() {
+            for builder in builders.iter()? {
                 let builder = memory.read(builder?)?;
                 let slice = memory.as_slice(builder)?.expect(
                     "cannot use with shared memories; \
@@ -156,7 +156,7 @@ impl generated::wasi_ephemeral_nn::WasiEphemeralNn for WasiNnCtx {
     fn load_by_name(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        name: wiggle::GuestPtr<str>,
+        name: wiggle::GuestPtr<str, u32>,
     ) -> Result<generated::types::Graph> {
         let name = memory.as_str(name)?.unwrap();
         if let Some(graph) = self.registry.get_mut(&name) {
@@ -218,7 +218,7 @@ impl generated::wasi_ephemeral_nn::WasiEphemeralNn for WasiNnCtx {
         memory: &mut GuestMemory<'_>,
         exec_context_id: generated::types::GraphExecutionContext,
         index: u32,
-        out_buffer: GuestPtr<u8>,
+        out_buffer: wiggle::GuestPtr<u8, u32>,
         out_buffer_max_size: u32,
     ) -> Result<u32> {
         if let Some(exec_context) = self.executions.get_mut(exec_context_id.into()) {
@@ -289,7 +289,7 @@ pub enum WasiNnError {
     #[error("backend error")]
     BackendError(#[from] BackendError),
     #[error("guest error")]
-    GuestError(#[from] GuestError),
+    GuestError(#[from] GuestError<u32>),
     #[error("usage error")]
     UsageError(#[from] UsageError),
     #[error("not enough memory: requested {0} bytes")]

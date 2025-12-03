@@ -1,4 +1,4 @@
-use crate::config::{AsyncConf, ErrorConf, ErrorConfField, TracingConf};
+use crate::config::{AbiConf, AsyncConf, ErrorConf, ErrorConfField, TracingConf};
 use anyhow::{Error, anyhow};
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
@@ -9,6 +9,7 @@ use witx::{Document, Id, InterfaceFunc, Module, NamedType, TypeRef};
 pub use crate::config::Asyncness;
 
 pub struct CodegenSettings {
+    pub abi: AbiConf,
     pub errors: ErrorTransform,
     pub async_: AsyncConf,
     pub wasmtime: bool,
@@ -28,6 +29,7 @@ impl CodegenSettings {
         wasmtime: bool,
         tracing: &TracingConf,
         mutable: bool,
+        abi: AbiConf,
     ) -> Result<Self, Error> {
         let errors = ErrorTransform::new(error_conf, doc)?;
         Ok(Self {
@@ -36,6 +38,7 @@ impl CodegenSettings {
             wasmtime,
             tracing: tracing.clone(),
             mutable,
+            abi: abi,
         })
     }
     pub fn get_async(&self, module: &Module, func: &InterfaceFunc) -> Asyncness {

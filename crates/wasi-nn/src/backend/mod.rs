@@ -117,7 +117,7 @@ pub enum BackendError {
     #[error("Failed while accessing backend")]
     BackendAccess(#[from] anyhow::Error),
     #[error("Failed while accessing guest module")]
-    GuestAccess(#[from] GuestError),
+    GuestAccess(#[from] GuestError<u32>),
     #[error("The backend expects {0} buffers, passed {1}")]
     InvalidNumberOfBuilders(usize, usize),
     #[error("Not enough memory to copy tensor data of size: {0}")]

@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::parse_macro_input;
+use wiggle_generate::{Context, config::AbiConf};
 
 /// This macro expands to a set of `pub` Rust modules:
 ///
@@ -150,6 +151,7 @@ pub fn from_witx(args: TokenStream) -> TokenStream {
         config.wasmtime,
         &config.tracing,
         config.mutable,
+        config.abi,
     )
     .expect("validating codegen settings");
 
@@ -197,7 +199,6 @@ pub fn from_witx(args: TokenStream) -> TokenStream {
 pub fn wasmtime_integration(args: TokenStream) -> TokenStream {
     let config = parse_macro_input!(args as wiggle_generate::WasmtimeConfig);
     let doc = config.c.load_document();
-
     let settings = wiggle_generate::CodegenSettings::new(
         &config.c.errors,
         &config.c.async_,
@@ -205,11 +206,16 @@ pub fn wasmtime_integration(args: TokenStream) -> TokenStream {
         true,
         &config.c.tracing,
         config.c.mutable,
+        config.c.abi,
     )
     .expect("validating codegen settings");
-
+    let (width, abi) = match settings.abi {
+        AbiConf::Memory32 => (format_ident!("u32"), witx::Abi::Preview1),
+        AbiConf::Memory64 => (format_ident!("u64"), witx::Abi::Preview1Memory64),
+    };
+    let ctx = Context { width, abi };
     let modules = doc.modules().map(|module| {
-        wiggle_generate::wasmtime::link_module(&module, Some(&config.target), &settings)
+        wiggle_generate::wasmtime::link_module(&ctx, &module, Some(&config.target), &settings)
     });
     quote!( #(#modules)* ).into()
 }

@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> ints::Ints for WasiCtx<'a> {
+impl<'a> ints::Ints for WasiCtx<'a, u32> {
     fn cookie_cutter(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -60,7 +60,7 @@ impl CookieCutterExercise {
         assert_eq!(res, types::Errno::Ok as i32, "cookie cutter errno");
 
         let is_cookie_start = memory
-            .read(GuestPtr::<types::Bool>::new(self.return_ptr_loc.ptr))
+            .read(GuestPtr::<types::Bool, u32>::new(self.return_ptr_loc.ptr))
             .expect("deref to Bool value");
 
         assert_eq!(

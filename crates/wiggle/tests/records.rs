@@ -8,7 +8,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> records::Records for WasiCtx<'a> {
+impl<'a> records::Records for WasiCtx<'a, u32> {
     fn sum_of_pair(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -56,8 +56,8 @@ impl<'a> records::Records for WasiCtx<'a> {
     fn return_pair_of_ptrs(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        first: GuestPtr<i32>,
-        second: GuestPtr<i32>,
+        first: GuestPtr<i32, u32>,
+        second: GuestPtr<i32, u32>,
     ) -> Result<types::PairIntPtrs, types::Errno> {
         Ok(types::PairIntPtrs { first, second })
     }
@@ -71,9 +71,9 @@ impl<'a> records::Records for WasiCtx<'a> {
         fn aux(
             memory: &mut GuestMemory<'_>,
             record_of_list: &types::RecordOfList,
-        ) -> Result<u16, wiggle::GuestError> {
+        ) -> Result<u16, wiggle::GuestError<u32>> {
             let mut s = 0;
-            for elem in record_of_list.arr.iter() {
+            for elem in record_of_list.arr.iter()? {
                 let v = memory.read(elem?)?;
                 s += v as u16;
             }

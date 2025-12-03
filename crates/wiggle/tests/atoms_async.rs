@@ -12,7 +12,7 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> atoms::Atoms for WasiCtx<'a> {
+impl<'a> atoms::Atoms for WasiCtx<'a, u32> {
     async fn int_float_args(
         &mut self,
         _memory: &mut GuestMemory<'_>,
@@ -90,7 +90,9 @@ impl DoubleIntExercise {
         .unwrap();
 
         let return_val = memory
-            .read(GuestPtr::<types::AliasToFloat>::new(self.return_loc.ptr))
+            .read(GuestPtr::<types::AliasToFloat, u32>::new(
+                self.return_loc.ptr,
+            ))
             .expect("failed to read return");
         assert_eq!(e, types::Errno::Ok as i32, "errno");
         assert_eq!(return_val, (self.input as f32) * 2.0, "return val");

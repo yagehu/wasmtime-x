@@ -8,12 +8,12 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> flags::Flags for WasiCtx<'a> {
+impl<'a> flags::Flags for WasiCtx<'a, u32> {
     fn configure_car(
         &mut self,
         memory: &mut GuestMemory<'_>,
         old_config: types::CarConfig,
-        other_config_ptr: GuestPtr<types::CarConfig>,
+        other_config_ptr: GuestPtr<types::CarConfig, u32>,
     ) -> Result<types::CarConfig, types::Errno> {
         let other_config = memory.read(other_config_ptr).map_err(|e| {
             eprintln!("old_config_ptr error: {e}");
@@ -85,7 +85,9 @@ impl ConfigureCarExercise {
         assert_eq!(res, types::Errno::Ok as i32, "configure car errno");
 
         let res_config = memory
-            .read(GuestPtr::<types::CarConfig>::new(self.return_ptr_loc.ptr))
+            .read(GuestPtr::<types::CarConfig, u32>::new(
+                self.return_ptr_loc.ptr,
+            ))
             .expect("deref to CarConfig value");
 
         assert_eq!(

@@ -45,8 +45,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     async fn args_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        argv: GuestPtr<GuestPtr<u8>>,
-        argv_buf: GuestPtr<u8>,
+        argv: GuestPtr<GuestPtr<u8, u32>, u32>,
+        argv_buf: GuestPtr<u8, u32>,
     ) -> Result<(), Error> {
         self.args.write_to_guest(memory, argv_buf, argv)
     }
@@ -61,8 +61,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     async fn environ_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        environ: GuestPtr<GuestPtr<u8>>,
-        environ_buf: GuestPtr<u8>,
+        environ: GuestPtr<GuestPtr<u8, u32>, u32>,
+        environ_buf: GuestPtr<u8, u32>,
     ) -> Result<(), Error> {
         self.env.write_to_guest(memory, environ_buf, environ)
     }
@@ -337,8 +337,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         }
         let f = &f.file;
 
-        let iovs: Vec<wiggle::GuestPtr<[u8]>> = iovs
-            .iter()
+        let iovs: Vec<wiggle::GuestPtr<[u8], u32>> = iovs
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Iovec = memory.read(iov_ptr)?;
@@ -408,8 +408,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         }
         let f = &f.file;
 
-        let iovs: Vec<wiggle::GuestPtr<[u8]>> = iovs
-            .iter()
+        let iovs: Vec<wiggle::GuestPtr<[u8], u32>> = iovs
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Iovec = memory.read(iov_ptr)?;
@@ -477,7 +477,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         let f = &f.file;
 
         let guest_slices: Vec<Cow<[u8]>> = ciovs
-            .iter()
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Ciovec = memory.read(iov_ptr)?;
@@ -509,7 +509,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         let f = &f.file;
 
         let guest_slices: Vec<Cow<[u8]>> = ciovs
-            .iter()
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Ciovec = memory.read(iov_ptr)?;
@@ -546,7 +546,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        path: GuestPtr<u8>,
+        path: GuestPtr<u8, u32>,
         path_max_len: types::Size,
     ) -> Result<(), Error> {
         let table = self.table();
@@ -632,7 +632,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        mut buf: GuestPtr<u8>,
+        mut buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
         cookie: types::Dircookie,
     ) -> Result<types::Size, Error> {
@@ -686,7 +686,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         self.table()
             .get_dir(u32::from(dirfd))?
@@ -700,7 +700,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<types::Filestat, Error> {
         let filestat = self
             .table()
@@ -719,7 +719,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         atim: types::Timestamp,
         mtim: types::Timestamp,
         fst_flags: types::Fstflags,
@@ -748,9 +748,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
         src_flags: types::Lookupflags,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         target_fd: types::Fd,
-        target_path: GuestPtr<str>,
+        target_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         let table = self.table();
         let src_dir = table.get_dir(u32::from(src_fd))?;
@@ -776,7 +776,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         dirflags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         oflags: types::Oflags,
         fs_rights_base: types::Rights,
         _fs_rights_inheriting: types::Rights,
@@ -824,8 +824,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
-        buf: GuestPtr<u8>,
+        path: GuestPtr<str, u32>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<types::Size, Error> {
         let link = self
@@ -850,7 +850,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         self.table()
             .get_dir(u32::from(dirfd))?
@@ -863,9 +863,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dest_fd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         let table = self.table();
         let src_dir = table.get_dir(u32::from(src_fd))?;
@@ -883,9 +883,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     async fn path_symlink(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dirfd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         self.table()
             .get_dir(u32::from(dirfd))?
@@ -901,7 +901,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         self.table()
             .get_dir(u32::from(dirfd))?
@@ -913,8 +913,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     async fn poll_oneoff(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        subs: GuestPtr<types::Subscription>,
-        events: GuestPtr<types::Event>,
+        subs: GuestPtr<types::Subscription, u32>,
+        events: GuestPtr<types::Event, u32>,
         nsubscriptions: types::Size,
     ) -> Result<types::Size, Error> {
         if nsubscriptions == 0 {
@@ -957,7 +957,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         let mut poll = Poll::new();
 
         let subs = subs.as_array(nsubscriptions);
-        for sub_elem in subs.iter() {
+        for sub_elem in subs.iter()? {
             let sub_ptr = sub_elem?;
             let sub = memory.read(sub_ptr)?;
             match sub.u {
@@ -1059,7 +1059,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
                 .try_into()
                 .expect("not greater than nsubscriptions"),
         );
-        for ((result, userdata), event_elem) in results.into_iter().zip(events.iter()) {
+        for ((result, userdata), event_elem) in results.into_iter().zip(events.iter()?) {
             let event_ptr = event_elem?;
             let userdata: types::Userdata = userdata.into();
             memory.write(
@@ -1152,7 +1152,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     async fn random_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        buf: GuestPtr<u8>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<(), Error> {
         let buf = buf.as_array(buf_len);
@@ -1201,8 +1201,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
     ) -> Result<(types::Size, types::Roflags), Error> {
         let f = self.table().get_file(u32::from(fd))?;
 
-        let iovs: Vec<wiggle::GuestPtr<[u8]>> = ri_data
-            .iter()
+        let iovs: Vec<wiggle::GuestPtr<[u8], u32>> = ri_data
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Iovec = memory.read(iov_ptr)?;
@@ -1271,7 +1271,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx {
         let f = self.table().get_file(u32::from(fd))?;
 
         let guest_slices: Vec<Cow<[u8]>> = si_data
-            .iter()
+            .iter()?
             .map(|iov_ptr| {
                 let iov_ptr = iov_ptr?;
                 let iov: types::Ciovec = memory.read(iov_ptr)?;

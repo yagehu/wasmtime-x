@@ -1,6 +1,6 @@
 use proptest::prelude::*;
-use std::marker;
-use wiggle::GuestMemory;
+use std::{fmt::Debug, marker};
+use wiggle::{GuestMemory, Width};
 
 #[derive(Debug, Clone)]
 pub struct MemAreas(Vec<MemArea>);
@@ -300,13 +300,19 @@ use wiggle::GuestError;
 
 // In lucet, our Ctx struct needs a lifetime, so we're using one
 // on the test as well.
-pub struct WasiCtx<'a> {
-    pub guest_errors: RefCell<Vec<GuestError>>,
+pub struct WasiCtx<'a, W>
+where
+    W: Width,
+{
+    pub guest_errors: RefCell<Vec<GuestError<W>>>,
     pub log: RefCell<Vec<String>>,
     lifetime: marker::PhantomData<&'a ()>,
 }
 
-impl<'a> WasiCtx<'a> {
+impl<'a, W> WasiCtx<'a, W>
+where
+    W: Width,
+{
     pub fn new() -> Self {
         Self {
             guest_errors: RefCell::new(vec![]),

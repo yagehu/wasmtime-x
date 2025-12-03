@@ -31,12 +31,12 @@ impl GuestErrorType for types::Errno {
     }
 }
 
-impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
+impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a, u32> {
     fn args_get(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        _argv: GuestPtr<GuestPtr<u8>>,
-        _argv_buf: GuestPtr<u8>,
+        _argv: GuestPtr<GuestPtr<u8, u32>, u32>,
+        _argv_buf: GuestPtr<u8, u32>,
     ) -> Result<()> {
         unimplemented!("args_get")
     }
@@ -51,8 +51,8 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
     fn environ_get(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        _environ: GuestPtr<GuestPtr<u8>>,
-        _environ_buf: GuestPtr<u8>,
+        _environ: GuestPtr<GuestPtr<u8, u32>, u32>,
+        _environ_buf: GuestPtr<u8, u32>,
     ) -> Result<()> {
         unimplemented!("environ_get")
     }
@@ -187,7 +187,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _path: GuestPtr<u8>,
+        _path: GuestPtr<u8, u32>,
         _path_len: types::Size,
     ) -> Result<()> {
         unimplemented!("fd_prestat_dir_name")
@@ -216,7 +216,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _buf: GuestPtr<u8>,
+        _buf: GuestPtr<u8, u32>,
         _buf_len: types::Size,
         _cookie: types::Dircookie,
     ) -> Result<types::Size> {
@@ -267,7 +267,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_create_directory")
     }
@@ -277,7 +277,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
         _flags: types::Lookupflags,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
     ) -> Result<types::Filestat> {
         unimplemented!("path_filestat_get")
     }
@@ -287,7 +287,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
         _flags: types::Lookupflags,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
         _atim: types::Timestamp,
         _mtim: types::Timestamp,
         _fst_flags: types::Fstflags,
@@ -300,9 +300,9 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         _memory: &mut GuestMemory<'_>,
         _old_fd: types::Fd,
         _old_flags: types::Lookupflags,
-        _old_path: GuestPtr<str>,
+        _old_path: GuestPtr<str, u32>,
         _new_fd: types::Fd,
-        _new_path: GuestPtr<str>,
+        _new_path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_link")
     }
@@ -312,7 +312,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
         _dirflags: types::Lookupflags,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
         _oflags: types::Oflags,
         _fs_rights_base: types::Rights,
         _fs_rights_inherting: types::Rights,
@@ -325,8 +325,8 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _path: GuestPtr<str>,
-        _buf: GuestPtr<u8>,
+        _path: GuestPtr<str, u32>,
+        _buf: GuestPtr<u8, u32>,
         _buf_len: types::Size,
     ) -> Result<types::Size> {
         unimplemented!("path_readlink")
@@ -336,7 +336,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_remove_directory")
     }
@@ -345,9 +345,9 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _old_path: GuestPtr<str>,
+        _old_path: GuestPtr<str, u32>,
         _new_fd: types::Fd,
-        _new_path: GuestPtr<str>,
+        _new_path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_rename")
     }
@@ -355,9 +355,9 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
     fn path_symlink(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        _old_path: GuestPtr<str>,
+        _old_path: GuestPtr<str, u32>,
         _fd: types::Fd,
-        _new_path: GuestPtr<str>,
+        _new_path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_symlink")
     }
@@ -366,7 +366,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
         &mut self,
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
-        _path: GuestPtr<str>,
+        _path: GuestPtr<str, u32>,
     ) -> Result<()> {
         unimplemented!("path_unlink_file")
     }
@@ -374,8 +374,8 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
     fn poll_oneoff(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        _in_: GuestPtr<types::Subscription>,
-        _out: GuestPtr<types::Event>,
+        _in_: GuestPtr<types::Subscription, u32>,
+        _out: GuestPtr<types::Event, u32>,
         _nsubscriptions: types::Size,
     ) -> Result<types::Size> {
         unimplemented!("poll_oneoff")
@@ -400,7 +400,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a> {
     fn random_get(
         &mut self,
         _memory: &mut GuestMemory<'_>,
-        _buf: GuestPtr<u8>,
+        _buf: GuestPtr<u8, u32>,
         _buf_len: types::Size,
     ) -> Result<()> {
         unimplemented!("random_get")

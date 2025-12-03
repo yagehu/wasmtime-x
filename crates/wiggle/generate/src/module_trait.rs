@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::codegen_settings::{CodegenSettings, ErrorType};
-use crate::names;
+use crate::{Context, names};
 use witx::Module;
 
 pub fn passed_by_reference(ty: &witx::Type) -> bool {
@@ -13,13 +13,13 @@ pub fn passed_by_reference(ty: &witx::Type) -> bool {
     }
 }
 
-pub fn define_module_trait(m: &Module, settings: &CodegenSettings) -> TokenStream {
+pub fn define_module_trait(ctx: &Context, m: &Module, settings: &CodegenSettings) -> TokenStream {
     let traitname = names::trait_name(&m.name);
     let traitmethods = m.funcs().map(|f| {
         let funcname = names::func(&f.name);
         let args = f.params.iter().map(|arg| {
             let arg_name = names::func_param(&arg.name);
-            let arg_typename = names::type_ref(&arg.tref, quote!());
+            let arg_typename = names::type_ref(ctx, &arg.tref, quote!());
             let arg_type = if passed_by_reference(&*arg.tref.type_()) {
                 quote!(&#arg_typename)
             } else {
@@ -41,7 +41,7 @@ pub fn define_module_trait(m: &Module, settings: &CodegenSettings) -> TokenStrea
                 };
 
                 let ok = match ok {
-                    Some(ty) => names::type_ref(ty, quote!()),
+                    Some(ty) => names::type_ref(ctx, ty, quote!()),
                     None => quote!(()),
                 };
                 let err = match err {
@@ -51,7 +51,7 @@ pub fn define_module_trait(m: &Module, settings: &CodegenSettings) -> TokenStrea
                             quote!(super::#tn)
                         }
                         Some(ErrorType::Generated(g)) => g.typename(),
-                        None => names::type_ref(ty, quote!()),
+                        None => names::type_ref(ctx, ty, quote!()),
                     },
                     None => quote!(()),
                 };

@@ -1,12 +1,13 @@
-use crate::CodegenSettings;
 use crate::config::Asyncness;
 use crate::funcs::func_bounds;
 use crate::names;
+use crate::{CodegenSettings, Context};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::HashSet;
 
 pub fn link_module(
+    ctx: &Context,
     module: &witx::Module,
     target_path: Option<&syn::Path>,
     settings: &CodegenSettings,
@@ -23,8 +24,8 @@ pub fn link_module(
     let mut bounds = HashSet::new();
     for f in module.funcs() {
         let asyncness = settings.async_.get(module.name.as_str(), f.name.as_str());
-        bodies.push(generate_func(&module, &f, target_path, asyncness));
-        let bound = func_bounds(module, &f, settings);
+        bodies.push(generate_func(ctx, &module, &f, target_path, asyncness));
+        let bound = func_bounds(ctx, module, &f, settings);
         for b in bound {
             bounds.insert(b);
         }
@@ -68,6 +69,7 @@ pub fn link_module(
 }
 
 fn generate_func(
+    ctx: &Context,
     module: &witx::Module,
     func: &witx::InterfaceFunc,
     target_path: Option<&syn::Path>,
@@ -75,11 +77,9 @@ fn generate_func(
 ) -> TokenStream {
     let module_str = module.name.as_str();
     let module_ident = names::module(&module.name);
-
     let field_str = func.name.as_str();
     let field_ident = names::func(&func.name);
-
-    let (params, results) = func.wasm_signature();
+    let (params, results) = func.wasm_signature(ctx.abi);
 
     let arg_names = (0..params.len())
         .map(|i| Ident::new(&format!("arg{i}"), Span::call_site()))
@@ -98,7 +98,7 @@ fn generate_func(
 
     let ret_ty = match results.len() {
         0 => quote!(()),
-        1 => names::wasm_type(results[0]),
+        1 => names::wasm_type(results[0].0),
         _ => unimplemented!(),
     };
 

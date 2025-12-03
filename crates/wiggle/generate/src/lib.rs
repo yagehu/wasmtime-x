@@ -10,7 +10,7 @@ pub mod wasmtime;
 use heck::ToShoutySnakeCase;
 use lifetimes::anon_lifetime;
 use proc_macro2::{Literal, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 
 pub use codegen_settings::{CodegenSettings, ErrorType, UserErrorType};
 pub use config::{Config, WasmtimeConfig};
@@ -19,9 +19,15 @@ pub use module_trait::define_module_trait;
 pub use types::define_datatype;
 
 pub fn generate(doc: &witx::Document, settings: &CodegenSettings) -> TokenStream {
+    let (width, abi) = match settings.abi {
+        config::AbiConf::Memory32 => (format_ident!("u32"), witx::Abi::Preview1),
+        config::AbiConf::Memory64 => (format_ident!("u64"), witx::Abi::Preview1Memory64),
+    };
+    let ctx = Context { width, abi };
+
     let types = doc
         .typenames()
-        .map(|t| define_datatype(&t, settings.errors.for_name(&t)));
+        .map(|t| define_datatype(&ctx, &t, settings.errors.for_name(&t)));
 
     let constants = doc.constants().map(|c| {
         let name = quote::format_ident!(
@@ -38,7 +44,7 @@ pub fn generate(doc: &witx::Document, settings: &CodegenSettings) -> TokenStream
 
     let user_error_methods = settings.errors.iter().filter_map(|errtype| match errtype {
         ErrorType::User(errtype) => {
-            let abi_typename = names::type_ref(&errtype.abi_type(), anon_lifetime());
+            let abi_typename = names::type_ref(&ctx, &errtype.abi_type(), anon_lifetime());
             let user_typename = errtype.typename();
             let methodname = names::user_error_conversion_method(&errtype);
             Some(quote! {
@@ -55,10 +61,12 @@ pub fn generate(doc: &witx::Document, settings: &CodegenSettings) -> TokenStream
     };
     let modules = doc.modules().map(|module| {
         let modname = names::module(&module.name);
-        let fs = module.funcs().map(|f| define_func(&module, &f, &settings));
-        let modtrait = define_module_trait(&module, &settings);
+        let fs = module
+            .funcs()
+            .map(|f| define_func(&ctx, &module, &f, &settings));
+        let modtrait = define_module_trait(&ctx, &module, &settings);
         let wasmtime = if settings.wasmtime {
-            crate::wasmtime::link_module(&module, None, &settings)
+            crate::wasmtime::link_module(&ctx, &module, None, &settings)
         } else {
             quote! {}
         };
@@ -97,4 +105,10 @@ pub fn generate_metadata(doc: &witx::Document) -> TokenStream {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub width: syn::Ident,
+    pub abi: witx::Abi,
 }

@@ -26,7 +26,7 @@ fn mult_zero_nan(a: f32, b: u32) -> f32 {
     }
 }
 
-impl<'a> variant_example::VariantExample for WasiCtx<'a> {
+impl<'a> variant_example::VariantExample for WasiCtx<'a, u32> {
     fn get_tag(
         &mut self,
         _memory: &mut GuestMemory<'_>,

@@ -1,10 +1,11 @@
 use anyhow::{Result, bail};
-use std::borrow::Cow;
 use std::cell::UnsafeCell;
-use std::fmt;
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::Range;
 use std::str;
+use std::{borrow::Cow, num::TryFromIntError};
+use std::{fmt, ops};
 
 pub use wiggle_macro::from_witx;
 
@@ -22,13 +23,45 @@ mod region;
 
 pub use tracing;
 
-pub use error::GuestError;
+pub use error::{BoxedError, GuestError};
 pub use guest_type::{GuestErrorType, GuestType, GuestTypeTransparent};
 pub use region::Region;
 
 #[cfg(feature = "wasmtime")]
 pub mod wasmtime_crate {
     pub use wasmtime::*;
+}
+
+pub trait Width:
+    TryFrom<usize, Error = TryFromIntError>
+    + TryInto<usize, Error = TryFromIntError>
+    + PartialEq
+    + fmt::LowerHex
+    + fmt::Display
+    + Copy
+{
+    fn checked_add(self, other: Self) -> Option<Self>;
+    fn checked_mul(self, other: Self) -> Option<Self>;
+}
+
+impl Width for u32 {
+    fn checked_add(self, other: Self) -> Option<Self> {
+        self.checked_add(other)
+    }
+
+    fn checked_mul(self, other: Self) -> Option<Self> {
+        self.checked_mul(other)
+    }
+}
+
+impl Width for u64 {
+    fn checked_add(self, other: Self) -> Option<Self> {
+        self.checked_add(other)
+    }
+
+    fn checked_mul(self, other: Self) -> Option<Self> {
+        self.checked_mul(other)
+    }
 }
 
 /// Representation of guest memory for `wiggle`-generated trait methods.
@@ -60,9 +93,10 @@ impl<'a> GuestMemory<'a> {
     ///
     /// An error is returned if `ptr` is out of bounds, misaligned, or otherwise
     /// not valid to read from.
-    pub fn read<T>(&self, ptr: GuestPtr<T>) -> Result<T, GuestError>
+    pub fn read<T, W>(&self, ptr: GuestPtr<T, W>) -> Result<T, GuestError<W>>
     where
-        T: GuestType,
+        W: Width,
+        T: GuestType<W>,
     {
         T::read(self, ptr)
     }
@@ -76,9 +110,10 @@ impl<'a> GuestMemory<'a> {
     ///
     /// An error is returned if `ptr` is out of bounds, misaligned, or otherwise
     /// not valid to read from.
-    pub fn write<T>(&mut self, ptr: GuestPtr<T>, val: T) -> Result<(), GuestError>
+    pub fn write<T, W>(&mut self, ptr: GuestPtr<T, W>, val: T) -> Result<(), GuestError<W>>
     where
-        T: GuestType,
+        T: GuestType<W>,
+        W: Width,
     {
         T::write(self, ptr, val)
     }
@@ -93,7 +128,10 @@ impl<'a> GuestMemory<'a> {
     ///
     /// An error is returned if `ptr` is out of bounds, misaligned, or otherwise
     /// not valid to read from.
-    pub fn as_cow(&self, ptr: GuestPtr<[u8]>) -> Result<Cow<'_, [u8]>, GuestError> {
+    pub fn as_cow<W>(&self, ptr: GuestPtr<[u8], W>) -> Result<Cow<'_, [u8]>, GuestError<W>>
+    where
+        W: Width + ops::Add<Output = W>,
+    {
         match self {
             GuestMemory::Unshared(_) => match self.as_slice(ptr)? {
                 Some(slice) => Ok(Cow::Borrowed(slice)),
@@ -109,7 +147,10 @@ impl<'a> GuestMemory<'a> {
     ///
     /// An error is returned if `ptr` is out of bounds, misaligned, or otherwise
     /// not valid to read from.
-    pub fn as_cow_str(&self, ptr: GuestPtr<str>) -> Result<Cow<'_, str>, GuestError> {
+    pub fn as_cow_str<W>(&self, ptr: GuestPtr<str, W>) -> Result<Cow<'_, str>, GuestError<W>>
+    where
+        W: Width + ops::Add<Output = W>,
+    {
         match self.as_cow(ptr.cast::<[u8]>())? {
             Cow::Owned(bytes) => Ok(Cow::Owned(
                 String::from_utf8(bytes).map_err(|e| e.utf8_error())?,
@@ -128,8 +169,11 @@ impl<'a> GuestMemory<'a> {
     ///
     /// An error is returned if `ptr` is out of bounds, misaligned, or otherwise
     /// not valid to read from.
-    pub fn as_slice(&self, ptr: GuestPtr<[u8]>) -> Result<Option<&[u8]>, GuestError> {
-        let range = self.validate_range::<u8>(ptr.pointer.0, ptr.pointer.1)?;
+    pub fn as_slice<W>(&self, ptr: GuestPtr<[u8], W>) -> Result<Option<&[u8]>, GuestError<W>>
+    where
+        W: Width + ops::Add<Output = W>,
+    {
+        let range = self.validate_range::<u8, W>(ptr.pointer.0, ptr.pointer.1)?;
         match self {
             GuestMemory::Unshared(slice) => Ok(Some(&slice[range])),
             GuestMemory::Shared(_) => Ok(None),
@@ -137,7 +181,10 @@ impl<'a> GuestMemory<'a> {
     }
 
     /// Same as [`GuestMemory::as_slice`] but for strings.
-    pub fn as_str(&self, ptr: GuestPtr<str>) -> Result<Option<&str>, GuestError> {
+    pub fn as_str<W>(&self, ptr: GuestPtr<str, W>) -> Result<Option<&str>, GuestError<W>>
+    where
+        W: Width + ops::Add<Output = W>,
+    {
         match self.as_slice(ptr.cast())? {
             Some(bytes) => Ok(Some(std::str::from_utf8(bytes)?)),
             None => Ok(None),
@@ -149,8 +196,14 @@ impl<'a> GuestMemory<'a> {
     ///
     /// Like [`GuestMemory::as_slice`] this only works for `Unshared` memories
     /// and will not work for `Shared` memories.
-    pub fn as_slice_mut(&mut self, ptr: GuestPtr<[u8]>) -> Result<Option<&mut [u8]>, GuestError> {
-        let range = self.validate_range::<u8>(ptr.pointer.0, ptr.pointer.1)?;
+    pub fn as_slice_mut<W>(
+        &mut self,
+        ptr: GuestPtr<[u8], W>,
+    ) -> Result<Option<&mut [u8]>, GuestError<W>>
+    where
+        W: Width + ops::Add<Output = W>,
+    {
+        let range = self.validate_range::<u8, W>(ptr.pointer.0, ptr.pointer.1)?;
         match self {
             GuestMemory::Unshared(slice) => Ok(Some(&mut slice[range])),
             GuestMemory::Shared(_) => Ok(None),
@@ -161,11 +214,12 @@ impl<'a> GuestMemory<'a> {
     ///
     /// This is useful when one cannot use [`GuestMemory::as_slice`], e.g., when
     /// pointing to a region of WebAssembly shared memory.
-    pub fn to_vec<T>(&self, ptr: GuestPtr<[T]>) -> Result<Vec<T>, GuestError>
+    pub fn to_vec<T, W>(&self, ptr: GuestPtr<[T], W>) -> Result<Vec<T>, GuestError<W>>
     where
-        T: GuestTypeTransparent + Copy,
+        T: GuestTypeTransparent<W> + Copy,
+        W: Width + ops::Add<Output = W>,
     {
-        let guest = self.validate_size_align::<T>(ptr.pointer.0, ptr.pointer.1)?;
+        let guest = self.validate_size_align::<T, W>(ptr.pointer.0, ptr.pointer.1)?;
         let mut host = Vec::with_capacity(guest.len());
 
         // SAFETY: The `guest_slice` variable is already a valid pointer into
@@ -197,18 +251,23 @@ impl<'a> GuestMemory<'a> {
     ///
     /// Returns an error if this guest pointer is out of bounds or if the length
     /// of this guest pointer is not equal to the length of the slice provided.
-    pub fn copy_from_slice<T>(&mut self, slice: &[T], ptr: GuestPtr<[T]>) -> Result<(), GuestError>
+    pub fn copy_from_slice<T, W>(
+        &mut self,
+        slice: &[T],
+        ptr: GuestPtr<[T], W>,
+    ) -> Result<(), GuestError<W>>
     where
-        T: GuestTypeTransparent + Copy,
+        T: GuestTypeTransparent<W> + Copy,
+        W: Width + PartialOrd + ops::Sub<Output = W> + ops::Add<Output = W> + fmt::Debug,
     {
-        if usize::try_from(ptr.len())? != slice.len() {
+        if ptr.len() != W::try_from(slice.len())? {
             return Err(GuestError::SliceLengthsDiffer);
         }
         if slice.is_empty() {
             return Ok(());
         }
 
-        let guest = self.validate_size_align::<T>(ptr.pointer.0, ptr.pointer.1)?;
+        let guest = self.validate_size_align::<T, W>(ptr.pointer.0, ptr.pointer.1)?;
 
         // SAFETY: in the shared memory case, we copy and accept that
         // the guest data may be concurrently modified. TODO: audit that
@@ -240,11 +299,16 @@ impl<'a> GuestMemory<'a> {
     /// `mem` for units of `T`, assuming everything is in-bounds and properly
     /// aligned. Additionally the byte-based `Region` is returned, used for borrows
     /// later on.
-    fn validate_size_align<T>(&self, offset: u32, len: u32) -> Result<&[UnsafeCell<T>], GuestError>
+    fn validate_size_align<T, W>(
+        &self,
+        offset: W,
+        len: W,
+    ) -> Result<&[UnsafeCell<T>], GuestError<W>>
     where
-        T: GuestTypeTransparent,
+        T: GuestTypeTransparent<W>,
+        W: Width + ops::Add<Output = W>,
     {
-        let range = self.validate_range::<T>(offset, len)?;
+        let range = self.validate_range::<T, W>(offset, len)?;
         let cells = match self {
             GuestMemory::Unshared(s) => {
                 let s: &[u8] = s;
@@ -263,17 +327,18 @@ impl<'a> GuestMemory<'a> {
         let (start, mid, end) = unsafe { memory.align_to() };
         if start.len() > 0 || end.len() > 0 {
             let region = Region {
-                start: range.start as u32,
-                len: range.len() as u32,
+                start: W::try_from(range.start)?,
+                len: W::try_from(range.len())?,
             };
             return Err(GuestError::PtrNotAligned(region, T::guest_align() as u32));
         }
         Ok(mid)
     }
 
-    fn validate_range<T>(&self, offset: u32, len: u32) -> Result<Range<usize>, GuestError>
+    fn validate_range<T, W>(&self, offset: W, len: W) -> Result<Range<usize>, GuestError<W>>
     where
-        T: GuestTypeTransparent,
+        T: GuestTypeTransparent<W>,
+        W: Width + ops::Add<Output = W>,
     {
         let byte_len = len
             .checked_mul(T::guest_size())
@@ -282,14 +347,12 @@ impl<'a> GuestMemory<'a> {
             start: offset,
             len: byte_len,
         };
-        let offset = usize::try_from(offset)?;
-        let byte_len = usize::try_from(byte_len)?;
-
-        let range = offset..offset + byte_len;
+        let range = offset.try_into()?..(offset + byte_len).try_into()?;
         let oob = match self {
             GuestMemory::Unshared(b) => b.get(range.clone()).is_none(),
             GuestMemory::Shared(b) => b.get(range.clone()).is_none(),
         };
+
         if oob {
             Err(GuestError::PtrOutOfBounds(region))
         } else {
@@ -353,18 +416,22 @@ impl<'a> GuestMemory<'a> {
 /// writing `unsafe` code when working with a `GuestPtr` if you're not using one
 /// of the already-attached helper methods.
 #[repr(transparent)]
-pub struct GuestPtr<T: ?Sized + Pointee> {
+pub struct GuestPtr<T: ?Sized + Pointee<W>, W: Width> {
     pointer: T::Pointer,
+    width: PhantomData<W>,
 }
 
-impl<T: ?Sized + Pointee> GuestPtr<T> {
+impl<T: ?Sized + Pointee<W>, W: Width> GuestPtr<T, W> {
     /// Creates a new `GuestPtr` from the given `mem` and `pointer` values.
     ///
     /// Note that for sized types like `u32`, `GuestPtr<T>`, etc, the `pointer`
     /// value is a `u32` offset into guest memory. For slices and strings,
     /// `pointer` is a `(u32, u32)` offset/length pair.
-    pub fn new(pointer: T::Pointer) -> GuestPtr<T> {
-        GuestPtr { pointer }
+    pub fn new(pointer: T::Pointer) -> GuestPtr<T, W> {
+        GuestPtr {
+            pointer,
+            width: PhantomData,
+        }
     }
 
     /// Returns the offset of this pointer in guest memory.
@@ -381,9 +448,9 @@ impl<T: ?Sized + Pointee> GuestPtr<T> {
     /// parameter on this `GuestPtr`. Note that this is a safe method, where
     /// again there's no guarantees about alignment, validity, in-bounds-ness,
     /// etc of the returned pointer.
-    pub fn cast<U>(&self) -> GuestPtr<U>
+    pub fn cast<U>(&self) -> GuestPtr<U, W>
     where
-        U: Pointee<Pointer = T::Pointer> + ?Sized,
+        U: Pointee<W, Pointer = T::Pointer> + ?Sized,
     {
         GuestPtr::new(self.pointer)
     }
@@ -394,9 +461,9 @@ impl<T: ?Sized + Pointee> GuestPtr<T> {
     /// This will either return the resulting pointer or `Err` if the pointer
     /// arithmetic calculation would overflow around the end of the address
     /// space.
-    pub fn add(&self, amt: u32) -> Result<GuestPtr<T>, GuestError>
+    pub fn add(&self, amt: W) -> Result<GuestPtr<T, W>, GuestError<W>>
     where
-        T: GuestType + Pointee<Pointer = u32>,
+        T: GuestType<W> + Pointee<W, Pointer = W>,
     {
         let offset = amt
             .checked_mul(T::guest_size())
@@ -410,25 +477,28 @@ impl<T: ?Sized + Pointee> GuestPtr<T> {
 
     /// Returns a `GuestPtr` for an array of `T`s using this pointer as the
     /// base.
-    pub fn as_array(&self, elems: u32) -> GuestPtr<[T]>
+    pub fn as_array(&self, elems: W) -> GuestPtr<[T], W>
     where
-        T: GuestType + Pointee<Pointer = u32>,
+        T: GuestType<W> + Pointee<W, Pointer = W>,
     {
         GuestPtr::new((self.pointer, elems))
     }
 }
 
-impl<T> GuestPtr<[T]> {
+impl<T, W> GuestPtr<[T], W>
+where
+    W: Width + PartialOrd + ops::Sub<Output = W> + fmt::Debug,
+{
     /// For slices, specifically returns the relative pointer to the base of the
     /// array.
     ///
     /// This is similar to `<[T]>::as_ptr()`
-    pub fn offset_base(&self) -> u32 {
+    pub fn offset_base(&self) -> W {
         self.pointer.0
     }
 
     /// For slices, returns the length of the slice, in elements.
-    pub fn len(&self) -> u32 {
+    pub fn len(&self) -> W {
         self.pointer.1
     }
 
@@ -436,23 +506,28 @@ impl<T> GuestPtr<[T]> {
     ///
     /// Each item is a `Result` indicating whether it overflowed past the end of
     /// the address space or not.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = Result<GuestPtr<T>, GuestError>> + '_
+    pub fn iter(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = Result<GuestPtr<T, W>, GuestError<W>>> + '_,
+        GuestError<W>,
+    >
     where
-        T: GuestType,
+        T: GuestType<W>,
     {
         let base = self.as_ptr();
-        (0..self.len()).map(move |i| base.add(i))
+        Ok((0..self.len().try_into()?).map(move |i| base.add(W::try_from(i)?)))
     }
 
     /// Returns a `GuestPtr` pointing to the base of the array for the interior
     /// type `T`.
-    pub fn as_ptr(&self) -> GuestPtr<T> {
+    pub fn as_ptr(&self) -> GuestPtr<T, W> {
         GuestPtr::new(self.offset_base())
     }
 
-    pub fn get(&self, index: u32) -> Option<GuestPtr<T>>
+    pub fn get(&self, index: W) -> Option<GuestPtr<T, W>>
     where
-        T: GuestType,
+        T: GuestType<W>,
     {
         if index < self.len() {
             Some(
@@ -465,9 +540,9 @@ impl<T> GuestPtr<[T]> {
         }
     }
 
-    pub fn get_range(&self, r: std::ops::Range<u32>) -> Option<GuestPtr<[T]>>
+    pub fn get_range(&self, r: std::ops::Range<W>) -> Option<GuestPtr<[T], W>>
     where
-        T: GuestType,
+        T: GuestType<W>,
     {
         if r.end < r.start {
             return None;
@@ -486,40 +561,40 @@ impl<T> GuestPtr<[T]> {
     }
 }
 
-impl GuestPtr<str> {
+impl<W: Width> GuestPtr<str, W> {
     /// For strings, returns the relative pointer to the base of the string
     /// allocation.
-    pub fn offset_base(&self) -> u32 {
+    pub fn offset_base(&self) -> W {
         self.pointer.0
     }
 
     /// Returns the length, in bytes, of the string.
-    pub fn len(&self) -> u32 {
+    pub fn len(&self) -> W {
         self.pointer.1
     }
 
     /// Returns a raw pointer for the underlying slice of bytes that this
     /// pointer points to.
-    pub fn as_bytes(&self) -> GuestPtr<[u8]> {
+    pub fn as_bytes(&self) -> GuestPtr<[u8], W> {
         GuestPtr::new(self.pointer)
     }
 }
 
-impl<T: ?Sized + Pointee> Clone for GuestPtr<T> {
+impl<T: ?Sized + Pointee<W>, W: Width> Clone for GuestPtr<T, W> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T: ?Sized + Pointee> Copy for GuestPtr<T> {}
+impl<T: ?Sized + Pointee<W>, W: Width> Copy for GuestPtr<T, W> {}
 
-impl<T: ?Sized + Pointee> fmt::Debug for GuestPtr<T> {
+impl<T: ?Sized + Pointee<W>, W: Width> fmt::Debug for GuestPtr<T, W> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         T::debug(self.pointer, f)
     }
 }
 
-impl<T: ?Sized + Pointee> PartialEq for GuestPtr<T> {
+impl<T: ?Sized + Pointee<W>, W: Width> PartialEq for GuestPtr<T, W> {
     fn eq(&self, other: &Self) -> bool {
         self.pointer == other.pointer
     }
@@ -536,29 +611,33 @@ mod private {
 ///
 /// In essence everything can, and the only special-case is unsized types like
 /// `str` and `[T]` which have special implementations.
-pub trait Pointee: private::Sealed {
+pub trait Pointee<W: Width>: private::Sealed {
     #[doc(hidden)]
     type Pointer: Copy + PartialEq;
+
     #[doc(hidden)]
     fn debug(pointer: Self::Pointer, f: &mut fmt::Formatter) -> fmt::Result;
 }
 
-impl<T> Pointee for T {
-    type Pointer = u32;
+impl<T, W: Width> Pointee<W> for T {
+    type Pointer = W;
+
     fn debug(pointer: Self::Pointer, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "*guest {pointer:#x}")
     }
 }
 
-impl<T> Pointee for [T] {
-    type Pointer = (u32, u32);
+impl<T, W: Width> Pointee<W> for [T] {
+    type Pointer = (W, W);
+
     fn debug(pointer: Self::Pointer, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "*guest {:#x}/{}", pointer.0, pointer.1)
     }
 }
 
-impl Pointee for str {
-    type Pointer = (u32, u32);
+impl<W: Width> Pointee<W> for str {
+    type Pointer = (W, W);
+
     fn debug(pointer: Self::Pointer, f: &mut fmt::Formatter) -> fmt::Result {
         <[u8]>::debug(pointer, f)
     }

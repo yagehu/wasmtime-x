@@ -43,7 +43,7 @@ mod convert_just_errno {
         }
     }
 
-    impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a> {
+    impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a, u32> {
         fn foo(&mut self, _memory: &mut GuestMemory<'_>, strike: u32) -> Result<(), types::ErrnoT> {
             // We use the argument to this function to exercise all of the
             // possible error cases we could hit here
@@ -132,7 +132,7 @@ mod convert_multiple_error_types {
     // The UserErrorConversion trait will also have two methods for this test. They correspond to
     // each member of the `errors` mapping.
     // Bodies elided.
-    impl<'a> types::UserErrorConversion for WasiCtx<'a> {
+    impl<'a> types::UserErrorConversion for WasiCtx<'a, u32> {
         fn errno_from_rich_error(&mut self, _e: RichError) -> Result<types::Errno> {
             unimplemented!()
         }
@@ -145,7 +145,7 @@ mod convert_multiple_error_types {
     }
 
     // And here's the witx module trait impl, bodies elided
-    impl<'a> two_error_conversions::TwoErrorConversions for WasiCtx<'a> {
+    impl<'a> two_error_conversions::TwoErrorConversions for WasiCtx<'a, u32> {
         fn foo(&mut self, _: &mut GuestMemory<'_>, _: u32) -> Result<(), RichError> {
             unimplemented!()
         }

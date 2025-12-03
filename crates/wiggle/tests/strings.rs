@@ -8,11 +8,11 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> strings::Strings for WasiCtx<'a> {
+impl<'a> strings::Strings for WasiCtx<'a, u32> {
     fn hello_string(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        a_string: GuestPtr<str>,
+        a_string: GuestPtr<str, u32>,
     ) -> Result<u32, types::Errno> {
         let s = memory
             .as_str(a_string)
@@ -25,9 +25,9 @@ impl<'a> strings::Strings for WasiCtx<'a> {
     fn multi_string(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        a: GuestPtr<str>,
-        b: GuestPtr<str>,
-        c: GuestPtr<str>,
+        a: GuestPtr<str, u32>,
+        b: GuestPtr<str, u32>,
+        c: GuestPtr<str, u32>,
     ) -> Result<u32, types::Errno> {
         let sa = memory
             .as_str(a)
@@ -91,8 +91,8 @@ impl HelloStringExercise {
         let mut memory = host_memory.guest_memory();
 
         // Populate string in guest's memory
-        let ptr = GuestPtr::<str>::new((self.string_ptr_loc.ptr, self.test_word.len() as u32));
-        for (slot, byte) in ptr.as_bytes().iter().zip(self.test_word.bytes()) {
+        let ptr = GuestPtr::<str, u32>::new((self.string_ptr_loc.ptr, self.test_word.len() as u32));
+        for (slot, byte) in ptr.as_bytes().iter().unwrap().zip(self.test_word.bytes()) {
             memory
                 .write(slot.expect("should be valid pointer"), byte)
                 .expect("failed to write");
@@ -109,7 +109,7 @@ impl HelloStringExercise {
         assert_eq!(res, types::Errno::Ok as i32, "hello string errno");
 
         let given = memory
-            .read(GuestPtr::<u32>::new(self.return_ptr_loc.ptr))
+            .read(GuestPtr::<u32, u32>::new(self.return_ptr_loc.ptr))
             .expect("deref ptr to return value");
         assert_eq!(self.test_word.len() as u32, given);
     }
@@ -204,8 +204,8 @@ impl MultiStringExercise {
         let mut memory = host_memory.guest_memory();
 
         let mut write_string = |val: &str, loc: MemArea| {
-            let ptr = GuestPtr::<str>::new((loc.ptr, val.len() as u32));
-            for (slot, byte) in ptr.as_bytes().iter().zip(val.bytes()) {
+            let ptr = GuestPtr::<str, u32>::new((loc.ptr, val.len() as u32));
+            for (slot, byte) in ptr.as_bytes().iter().unwrap().zip(val.bytes()) {
                 memory
                     .write(slot.expect("should be valid pointer"), byte)
                     .expect("failed to write");
@@ -231,7 +231,7 @@ impl MultiStringExercise {
         assert_eq!(res, types::Errno::Ok as i32, "multi string errno");
 
         let given = memory
-            .read(GuestPtr::<u32>::new(self.return_ptr_loc.ptr))
+            .read(GuestPtr::<u32, u32>::new(self.return_ptr_loc.ptr))
             .expect("deref ptr to return value");
         assert_eq!((self.a.len() + self.b.len() + self.c.len()) as u32, given);
     }
@@ -284,8 +284,8 @@ impl OverlappingStringExercise {
         let mut memory = host_memory.guest_memory();
 
         let mut write_string = |val: &str, loc: MemArea| {
-            let ptr = GuestPtr::<str>::new((loc.ptr, val.len() as u32));
-            for (slot, byte) in ptr.as_bytes().iter().zip(val.bytes()) {
+            let ptr = GuestPtr::<str, u32>::new((loc.ptr, val.len() as u32));
+            for (slot, byte) in ptr.as_bytes().iter().unwrap().zip(val.bytes()) {
                 memory
                     .write(slot.expect("should be valid pointer"), byte)
                     .expect("failed to write");
@@ -310,7 +310,7 @@ impl OverlappingStringExercise {
         assert_eq!(res, types::Errno::Ok as i32, "multi string errno");
 
         let given = memory
-            .read(GuestPtr::<u32>::new(self.return_ptr_loc.ptr))
+            .read(GuestPtr::<u32, u32>::new(self.return_ptr_loc.ptr))
             .expect("deref ptr to return value");
         assert_eq!(
             ((3 * a_len) - (self.offset_b as i32 + self.offset_c as i32)) as u32,

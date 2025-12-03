@@ -1,9 +1,9 @@
-use crate::{GuestError, GuestMemory, GuestPtr};
+use crate::{GuestError, GuestMemory, GuestPtr, Width};
 use std::cell::UnsafeCell;
-use std::mem;
 use std::sync::atomic::{
     AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering,
 };
+use std::{mem, ops};
 
 /// A trait for types which are used to report errors. Each type used in the
 /// first result position of an interface function is used, by convention, to
@@ -22,9 +22,12 @@ pub trait GuestErrorType {
 /// abstraction allows the guest representation of a type to be different from
 /// the host representation of a type, if necessary. It also allows for
 /// validation when reading/writing.
-pub trait GuestType: Sized {
+pub trait GuestType<W>: Sized
+where
+    W: Width,
+{
     /// Returns the size, in bytes, of this type in the guest memory.
-    fn guest_size() -> u32;
+    fn guest_size() -> W;
 
     /// Returns the required alignment of this type, in bytes, for both guest
     /// and host memory.
@@ -38,14 +41,15 @@ pub trait GuestType: Sized {
     /// Typically if you're implementing this by hand you'll want to delegate to
     /// other safe implementations of this trait (e.g. for primitive types like
     /// `u32`) rather than writing lots of raw code yourself.
-    fn read(mem: &GuestMemory, ptr: GuestPtr<Self>) -> Result<Self, GuestError>;
+    fn read(mem: &GuestMemory, ptr: GuestPtr<Self, W>) -> Result<Self, GuestError<W>>;
 
     /// Writes a value to `ptr` after verifying that `ptr` is indeed valid to
     /// store `val`.
     ///
     /// Similar to `read`, you'll probably want to implement this in terms of
     /// other primitives.
-    fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self>, val: Self) -> Result<(), GuestError>;
+    fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self, W>, val: Self)
+    -> Result<(), GuestError<W>>;
 }
 
 /// A trait for `GuestType`s that have the same representation in guest memory
@@ -57,24 +61,32 @@ pub trait GuestType: Sized {
 /// representation on the host matches the guest and all bit patterns are
 /// valid. This trait should only ever be implemented by
 /// wiggle_generate-produced code.
-pub unsafe trait GuestTypeTransparent: GuestType {}
+pub unsafe trait GuestTypeTransparent<W>: GuestType<W>
+where
+    W: Width,
+{
+}
 
 macro_rules! integer_primitives {
     ($([$ty:ident, $ty_atomic:ident],)*) => ($(
-        impl GuestType for $ty {
+        impl<W: Width> GuestType<W> for $ty
+        where
+            W: std::ops::Add<Output = W>,
+        {
             #[inline]
-            fn guest_size() -> u32 { mem::size_of::<Self>() as u32 }
+            fn guest_size() -> W { mem::size_of::<Self>().try_into().unwrap() }
+
             #[inline]
             fn guest_align() -> usize { mem::align_of::<Self>() }
 
             #[inline]
-            fn read(mem: &GuestMemory, ptr: GuestPtr<Self>) -> Result<Self, GuestError> {
+            fn read(mem: &GuestMemory, ptr: GuestPtr<Self, W>) -> Result<Self, GuestError<W>> {
                 // Use `validate_size_align` to validate offset and alignment
                 // internally. The `host_ptr` type will be `&UnsafeCell<Self>`
                 // indicating that the memory is valid, and next safety checks
                 // are required to access it.
                 let offset = ptr.offset();
-                let host_ptr = mem.validate_size_align::<Self>(offset, 1)?;
+                let host_ptr = mem.validate_size_align::<Self, W>(offset, W::try_from(1)?)?;
 
                 // If the accessed memory is shared, we need to load the bytes
                 // with the correct memory consistency. We could check if the
@@ -93,11 +105,11 @@ macro_rules! integer_primitives {
             }
 
             #[inline]
-            fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self>, val: Self) -> Result<(), GuestError> {
+            fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self, W>, val: Self) -> Result<(), GuestError<W>> {
                 // See `read` above for various checks here.
                 let val = val.to_le();
                 let offset = ptr.offset();
-                let host_ptr = mem.validate_size_align::<Self>(offset, 1)?;
+                let host_ptr = mem.validate_size_align::<Self, W>(offset, W::try_from(1)?)?;
                 let host_ptr = &host_ptr[0];
                 let atomic_value_ref: &$ty_atomic =
                     unsafe { &*(host_ptr.get().cast::<$ty_atomic>()) };
@@ -106,31 +118,41 @@ macro_rules! integer_primitives {
             }
         }
 
-        unsafe impl GuestTypeTransparent for $ty {}
+        unsafe impl<W: Width> GuestTypeTransparent<W> for $ty
+        where
+            W: std::ops::Add<Output = W>,
+        {}
 
     )*)
 }
 
 macro_rules! float_primitives {
     ($([$ty:ident, $ty_unsigned:ident, $ty_atomic:ident],)*) => ($(
-        impl GuestType for $ty {
+        impl<W> GuestType<W> for $ty
+        where
+            W: Width + std::ops::Add<Output = W>,
+        {
             #[inline]
-            fn guest_size() -> u32 { mem::size_of::<Self>() as u32 }
+            fn guest_size() -> W { mem::size_of::<Self>().try_into().unwrap() }
+
             #[inline]
             fn guest_align() -> usize { mem::align_of::<Self>() }
 
             #[inline]
-            fn read(mem: &GuestMemory, ptr: GuestPtr<Self>) -> Result<Self, GuestError> {
-                <$ty_unsigned as GuestType>::read(mem, ptr.cast()).map($ty::from_bits)
+            fn read(mem: &GuestMemory, ptr: GuestPtr<Self, W>) -> Result<Self, GuestError<W>> {
+                <$ty_unsigned as GuestType<W>>::read(mem, ptr.cast()).map($ty::from_bits)
             }
 
             #[inline]
-            fn write(mem:&mut GuestMemory, ptr: GuestPtr<Self>, val: Self) -> Result<(), GuestError> {
-                <$ty_unsigned as GuestType>::write(mem, ptr.cast(), val.to_bits())
+            fn write(mem:&mut GuestMemory, ptr: GuestPtr<Self, W>, val: Self) -> Result<(), GuestError<W>> {
+                <$ty_unsigned as GuestType<W>>::write(mem, ptr.cast(), val.to_bits())
             }
         }
 
-        unsafe impl GuestTypeTransparent for $ty {}
+        unsafe impl<W> GuestTypeTransparent<W> for $ty
+        where
+            W: Width + std::ops::Add<Output = W>,
+        {}
 
     )*)
 }
@@ -147,54 +169,66 @@ float_primitives! {
 }
 
 // Support pointers-to-pointers where pointers are always 32-bits in wasm land
-impl<T> GuestType for GuestPtr<T> {
+impl<T, W> GuestType<W> for GuestPtr<T, W>
+where
+    W: Width + GuestType<W>,
+{
     #[inline]
-    fn guest_size() -> u32 {
-        u32::guest_size()
+    fn guest_size() -> W {
+        W::try_from(mem::size_of::<W>()).unwrap()
     }
 
     #[inline]
     fn guest_align() -> usize {
-        u32::guest_align()
+        mem::align_of::<W>()
     }
 
-    fn read(mem: &GuestMemory, ptr: GuestPtr<Self>) -> Result<Self, GuestError> {
-        let offset = u32::read(mem, ptr.cast())?;
+    fn read(mem: &GuestMemory, ptr: GuestPtr<Self, W>) -> Result<Self, GuestError<W>> {
+        let offset = W::read(mem, ptr.cast())?;
         Ok(GuestPtr::new(offset))
     }
 
-    fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self>, val: Self) -> Result<(), GuestError> {
-        u32::write(mem, ptr.cast(), val.offset())
+    fn write(
+        mem: &mut GuestMemory,
+        ptr: GuestPtr<Self, W>,
+        val: Self,
+    ) -> Result<(), GuestError<W>> {
+        W::write(mem, ptr.cast(), val.offset())
     }
 }
 
 // Support pointers-to-arrays where pointers are always 32-bits in wasm land
-impl<T> GuestType for GuestPtr<[T]>
+impl<T, W> GuestType<W> for GuestPtr<[T], W>
 where
-    T: GuestType,
+    T: GuestType<W>,
+    W: Width + GuestType<W> + ops::Mul<Output = W>,
 {
     #[inline]
-    fn guest_size() -> u32 {
-        u32::guest_size() * 2
+    fn guest_size() -> W {
+        W::guest_size() * W::try_from(2).unwrap()
     }
 
     #[inline]
     fn guest_align() -> usize {
-        u32::guest_align()
+        W::guest_align()
     }
 
-    fn read(mem: &GuestMemory, ptr: GuestPtr<Self>) -> Result<Self, GuestError> {
-        let ptr = ptr.cast::<u32>();
-        let offset = u32::read(mem, ptr)?;
-        let len = u32::read(mem, ptr.add(1)?)?;
+    fn read(mem: &GuestMemory, ptr: GuestPtr<Self, W>) -> Result<Self, GuestError<W>> {
+        let ptr = ptr.cast::<W>();
+        let offset = W::read(mem, ptr)?;
+        let len = W::read(mem, ptr.add(W::try_from(1)?)?)?;
         Ok(GuestPtr::new(offset).as_array(len))
     }
 
-    fn write(mem: &mut GuestMemory, ptr: GuestPtr<Self>, val: Self) -> Result<(), GuestError> {
+    fn write(
+        mem: &mut GuestMemory,
+        ptr: GuestPtr<Self, W>,
+        val: Self,
+    ) -> Result<(), GuestError<W>> {
         let (offset, len) = val.offset();
-        let ptr = ptr.cast::<u32>();
-        u32::write(mem, ptr, offset)?;
-        u32::write(mem, ptr.add(1)?, len)?;
+        let ptr = ptr.cast::<W>();
+        W::write(mem, ptr, offset)?;
+        W::write(mem, ptr.add(W::try_from(1)?)?, len)?;
         Ok(())
     }
 }

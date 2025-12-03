@@ -230,8 +230,8 @@ impl From<cap_rand::Error> for Error {
     }
 }
 
-impl From<wiggle::GuestError> for Error {
-    fn from(err: wiggle::GuestError) -> Error {
+impl From<wiggle::GuestError<u32>> for Error {
+    fn from(err: wiggle::GuestError<u32>) -> Error {
         use wiggle::GuestError::*;
         match err {
             InvalidFlagValue { .. } => Errno::Inval.into(),
@@ -252,7 +252,7 @@ impl From<wiggle::GuestError> for Error {
             InvalidUtf8 { .. } => Errno::Ilseq.into(),
             TryFromIntError { .. } => Errno::Overflow.into(),
             SliceLengthsDiffer { .. } => Errno::Fault.into(),
-            InFunc { err, .. } => Error::from(*err),
+            InFunc { .. } => Error::from(err),
         }
     }
 }

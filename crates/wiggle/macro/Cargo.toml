@@ -19,6 +19,7 @@ test = false
 doctest = false
 
 [dependencies]
+witx = { git = "https://github.com/yagehu/wasi.git", branch = "yagehu/memory64" }
 wiggle-generate = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true, features = ["full"] }

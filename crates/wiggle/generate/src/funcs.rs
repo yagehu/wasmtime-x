@@ -1,39 +1,42 @@
 use crate::codegen_settings::{CodegenSettings, ErrorType};
 use crate::lifetimes::anon_lifetime;
 use crate::module_trait::passed_by_reference;
-use crate::names;
 use crate::types::WiggleType;
+use crate::{Context, names};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use std::mem;
 use witx::Instruction;
 
 pub fn define_func(
+    ctx: &Context,
     module: &witx::Module,
     func: &witx::InterfaceFunc,
     settings: &CodegenSettings,
 ) -> TokenStream {
-    let (ts, _bounds) = _define_func(module, func, settings);
+    let (ts, _bounds) = _define_func(ctx, module, func, settings);
     ts
 }
 
 pub fn func_bounds(
+    ctx: &Context,
     module: &witx::Module,
     func: &witx::InterfaceFunc,
     settings: &CodegenSettings,
 ) -> Vec<Ident> {
-    let (_ts, bounds) = _define_func(module, func, settings);
+    let (_ts, bounds) = _define_func(ctx, module, func, settings);
     bounds
 }
 
 fn _define_func(
+    ctx: &Context,
     module: &witx::Module,
     func: &witx::InterfaceFunc,
     settings: &CodegenSettings,
 ) -> (TokenStream, Vec<Ident>) {
     let ident = names::func(&func.name);
 
-    let (wasm_params, wasm_results) = func.wasm_signature();
+    let (wasm_params, wasm_results) = func.wasm_signature(ctx.abi);
     let param_names = (0..wasm_params.len())
         .map(|i| Ident::new(&format!("arg{i}"), Span::call_site()))
         .collect::<Vec<_>>();
@@ -45,7 +48,7 @@ fn _define_func(
     let abi_ret = match wasm_results.len() {
         0 => quote!(()),
         1 => {
-            let ty = names::wasm_type(wasm_results[0]);
+            let ty = names::wasm_type(wasm_results[0].0);
             quote!(#ty)
         }
         _ => unimplemented!(),
@@ -64,7 +67,9 @@ fn _define_func(
             funcname: func.name.as_str(),
             settings,
             bounds: &mut bounds,
+            ctx,
         },
+        ctx.abi,
     );
 
     let mod_name = &module.name.as_str();
@@ -147,6 +152,7 @@ struct Rust<'a> {
     funcname: &'a str,
     settings: &'a CodegenSettings,
     bounds: &'a mut Vec<Ident>,
+    ctx: &'a Context,
 }
 
 impl Rust<'_> {
@@ -191,16 +197,17 @@ impl witx::Bindgen for Rust<'_> {
         operands: &mut Vec<TokenStream>,
         results: &mut Vec<TokenStream>,
     ) {
+        let width = &self.ctx.width;
         let wrap_err = |location: &str| {
             let modulename = self.module.name.as_str();
             let funcname = self.funcname;
             quote! {
                 |e| {
-                    wiggle::GuestError::InFunc {
+                    wiggle::GuestError::<#width>::InFunc {
                         modulename: #modulename,
                         funcname: #funcname,
                         location: #location,
-                        err: Box::new(wiggle::GuestError::from(e)),
+                        err: Box::new(wiggle::GuestError::<#width>::from(e)),
                     }
                 }
             }
@@ -220,9 +227,9 @@ impl witx::Bindgen for Rust<'_> {
 
             Instruction::PointerFromI32 { ty } | Instruction::ConstPointerFromI32 { ty } => {
                 let val = operands.pop().unwrap();
-                let pointee_type = names::type_ref(ty, anon_lifetime());
+                let pointee_type = names::type_ref(self.ctx, ty, anon_lifetime());
                 results.push(quote! {
-                    wiggle::GuestPtr::<#pointee_type>::new(#val as u32)
+                    wiggle::GuestPtr::<#pointee_type, #width>::new(#val.try_into()?)
                 });
             }
 
@@ -232,12 +239,12 @@ impl witx::Bindgen for Rust<'_> {
                 let ty = match &**ty.type_() {
                     witx::Type::Builtin(witx::BuiltinType::Char) => quote!(str),
                     _ => {
-                        let ty = names::type_ref(ty, anon_lifetime());
+                        let ty = names::type_ref(self.ctx, ty, anon_lifetime());
                         quote!([#ty])
                     }
                 };
                 results.push(quote! {
-                    wiggle::GuestPtr::<#ty>::new((#ptr as u32, #len as u32));
+                    wiggle::GuestPtr::<#ty, #width>::new((#ptr.try_into()?, #len.try_into()?));
                 })
             }
 
@@ -331,7 +338,7 @@ impl witx::Bindgen for Rust<'_> {
                 let err = self.blocks.pop().unwrap();
                 let ok = self.blocks.pop().unwrap();
                 let val = operands.pop().unwrap();
-                let err_typename = names::type_ref(err_ty.unwrap(), anon_lifetime());
+                let err_typename = names::type_ref(self.ctx, err_ty.unwrap(), anon_lifetime());
                 results.push(quote! {
                     match #val {
                         Ok(e) => { #ok; <#err_typename as wiggle::GuestErrorType>::success() as i32 }
@@ -367,7 +374,7 @@ impl witx::Bindgen for Rust<'_> {
                 let pointee_type = names::type_(&ty.name);
                 self.src.extend(quote! {
                     memory.write(
-                        wiggle::GuestPtr::<#pointee_type>::new(#ptr as u32),
+                        wiggle::GuestPtr::<#pointee_type, #width>::new(#ptr.try_into()?),
                         #val,
                     )
                     .map_err(#wrap_err)?;
@@ -379,7 +386,7 @@ impl witx::Bindgen for Rust<'_> {
                 let wrap_err = wrap_err(&format!("read {}", ty.name.as_str()));
                 let pointee_type = names::type_(&ty.name);
                 results.push(quote! {
-                    memory.read(wiggle::GuestPtr::<#pointee_type>::new(#ptr as u32))
+                    memory.read(wiggle::GuestPtr::<#pointee_type, #width>::new(#ptr as #width))
                         .map_err(#wrap_err)?
                 });
             }

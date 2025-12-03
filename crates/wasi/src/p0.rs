@@ -73,8 +73,8 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
     fn args_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        argv: GuestPtr<GuestPtr<u8>>,
-        argv_buf: GuestPtr<u8>,
+        argv: GuestPtr<GuestPtr<u8, u32>, u32>,
+        argv_buf: GuestPtr<u8, u32>,
     ) -> Result<(), Error> {
         Snapshot1::args_get(self, memory, argv, argv_buf)?;
         Ok(())
@@ -91,8 +91,8 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
     fn environ_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        environ: GuestPtr<GuestPtr<u8>>,
-        environ_buf: GuestPtr<u8>,
+        environ: GuestPtr<GuestPtr<u8, u32>, u32>,
+        environ_buf: GuestPtr<u8, u32>,
     ) -> Result<(), Error> {
         Snapshot1::environ_get(self, memory, environ, environ_buf)?;
         Ok(())
@@ -290,7 +290,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        path: GuestPtr<u8>,
+        path: GuestPtr<u8, u32>,
         path_max_len: types::Size,
     ) -> Result<(), Error> {
         Snapshot1::fd_prestat_dir_name(self, memory, fd.into(), path, path_max_len)?;
@@ -334,7 +334,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        buf: GuestPtr<u8>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
         cookie: types::Dircookie,
     ) -> Result<types::Size, Error> {
@@ -345,7 +345,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_create_directory(self, memory, dirfd.into(), path).await?;
         Ok(())
@@ -356,7 +356,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<types::Filestat, Error> {
         Ok(
             Snapshot1::path_filestat_get(self, memory, dirfd.into(), flags.into(), path)
@@ -370,7 +370,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         atim: types::Timestamp,
         mtim: types::Timestamp,
         fst_flags: types::Fstflags,
@@ -394,9 +394,9 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
         src_flags: types::Lookupflags,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         target_fd: types::Fd,
-        target_path: GuestPtr<str>,
+        target_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_link(
             self,
@@ -416,7 +416,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         dirflags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         oflags: types::Oflags,
         fs_rights_base: types::Rights,
         fs_rights_inheriting: types::Rights,
@@ -441,8 +441,8 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
-        buf: GuestPtr<u8>,
+        path: GuestPtr<str, u32>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<types::Size, Error> {
         Ok(Snapshot1::path_readlink(self, memory, dirfd.into(), path, buf, buf_len).await?)
@@ -452,7 +452,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_remove_directory(self, memory, dirfd.into(), path).await?;
         Ok(())
@@ -462,9 +462,9 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dest_fd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_rename(
             self,
@@ -481,9 +481,9 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
     async fn path_symlink(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dirfd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_symlink(self, memory, src_path, dirfd.into(), dest_path).await?;
         Ok(())
@@ -493,7 +493,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), Error> {
         Snapshot1::path_unlink_file(self, memory, dirfd.into(), path).await?;
         Ok(())
@@ -510,13 +510,13 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
     async fn poll_oneoff(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        subs: GuestPtr<types::Subscription>,
-        events: GuestPtr<types::Event>,
+        subs: GuestPtr<types::Subscription, u32>,
+        events: GuestPtr<types::Event, u32>,
         nsubscriptions: types::Size,
     ) -> Result<types::Size, Error> {
         let subs_array = subs.as_array(nsubscriptions);
         let mut old_subs = Vec::new();
-        for slot in subs_array.iter() {
+        for slot in subs_array.iter()? {
             let slot = slot?;
             let sub = memory.read(slot)?;
             old_subs.push(sub.clone());
@@ -540,7 +540,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
         }
         let ret = Snapshot1::poll_oneoff(self, memory, subs.cast(), events.cast(), nsubscriptions)
             .await?;
-        for (sub, slot) in old_subs.into_iter().zip(subs_array.iter()) {
+        for (sub, slot) in old_subs.into_iter().zip(subs_array.iter()?) {
             memory.write(slot?, sub)?;
         }
         Ok(ret)
@@ -571,7 +571,7 @@ impl<T: Snapshot1 + Send> wasi_unstable::WasiUnstable for T {
     fn random_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        buf: GuestPtr<u8>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<(), Error> {
         Snapshot1::random_get(self, memory, buf, buf_len)?;
@@ -975,8 +975,8 @@ convert_flags!(
     SUBSCRIPTION_CLOCK_ABSTIME
 );
 
-impl From<GuestError> for types::Error {
-    fn from(err: GuestError) -> Self {
+impl From<GuestError<u32>> for types::Error {
+    fn from(err: GuestError<u32>) -> Self {
         snapshot1_types::Error::from(err).into()
     }
 }

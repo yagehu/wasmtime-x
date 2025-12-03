@@ -221,7 +221,7 @@ impl BlockingMode {
         memory: &mut GuestMemory<'_>,
         host: &mut impl streams::HostOutputStream,
         output_stream: Resource<streams::OutputStream>,
-        bytes: GuestPtr<[u8]>,
+        bytes: GuestPtr<[u8], u32>,
     ) -> StreamResult<usize> {
         use streams::HostOutputStream as Streams;
 
@@ -1057,8 +1057,8 @@ impl From<std::num::TryFromIntError> for types::Error {
     }
 }
 
-impl From<GuestError> for types::Error {
-    fn from(err: GuestError) -> Self {
+impl From<GuestError<u32>> for types::Error {
+    fn from(err: GuestError<u32>) -> Self {
         use wiggle::GuestError::*;
         match err {
             InvalidFlagValue { .. } => types::Errno::Inval.into(),
@@ -1079,7 +1079,7 @@ impl From<GuestError> for types::Error {
             InvalidUtf8 { .. } => types::Errno::Ilseq.into(),
             TryFromIntError { .. } => types::Errno::Overflow.into(),
             SliceLengthsDiffer { .. } => types::Errno::Fault.into(),
-            InFunc { err, .. } => types::Error::from(*err),
+            InFunc { .. } => types::Error::from(err),
         }
     }
 }
@@ -1106,9 +1106,9 @@ type Result<T, E = types::Error> = std::result::Result<T, E>;
 
 fn write_bytes(
     memory: &mut GuestMemory<'_>,
-    ptr: GuestPtr<u8>,
+    ptr: GuestPtr<u8, u32>,
     buf: &[u8],
-) -> Result<GuestPtr<u8>, types::Error> {
+) -> Result<GuestPtr<u8, u32>, types::Error> {
     // NOTE: legacy implementation always returns Inval errno
 
     let len = u32::try_from(buf.len())?;
@@ -1118,13 +1118,17 @@ fn write_bytes(
     Ok(next)
 }
 
-fn write_byte(memory: &mut GuestMemory<'_>, ptr: GuestPtr<u8>, byte: u8) -> Result<GuestPtr<u8>> {
+fn write_byte(
+    memory: &mut GuestMemory<'_>,
+    ptr: GuestPtr<u8, u32>,
+    byte: u8,
+) -> Result<GuestPtr<u8, u32>> {
     memory.write(ptr, byte)?;
     let next = ptr.add(1)?;
     Ok(next)
 }
 
-fn read_string<'a>(memory: &'a GuestMemory<'_>, ptr: GuestPtr<str>) -> Result<String> {
+fn read_string<'a>(memory: &'a GuestMemory<'_>, ptr: GuestPtr<str, u32>) -> Result<String> {
     Ok(memory.as_cow_str(ptr)?.into_owned())
 }
 
@@ -1133,8 +1137,8 @@ fn read_string<'a>(memory: &'a GuestMemory<'_>, ptr: GuestPtr<str>) -> Result<St
 fn first_non_empty_ciovec(
     memory: &GuestMemory<'_>,
     ciovs: types::CiovecArray,
-) -> Result<GuestPtr<[u8]>> {
-    for iov in ciovs.iter() {
+) -> Result<GuestPtr<[u8], u32>> {
+    for iov in ciovs.iter()? {
         let iov = memory.read(iov?)?;
         if iov.buf_len == 0 {
             continue;
@@ -1149,8 +1153,8 @@ fn first_non_empty_ciovec(
 fn first_non_empty_iovec(
     memory: &GuestMemory<'_>,
     iovs: types::IovecArray,
-) -> Result<GuestPtr<[u8]>> {
-    for iov in iovs.iter() {
+) -> Result<GuestPtr<[u8], u32>> {
+    for iov in iovs.iter()? {
         let iov = memory.read(iov?)?;
         if iov.buf_len == 0 {
             continue;
@@ -1168,8 +1172,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     fn args_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        argv: GuestPtr<GuestPtr<u8>>,
-        argv_buf: GuestPtr<u8>,
+        argv: GuestPtr<GuestPtr<u8, u32>, u32>,
+        argv_buf: GuestPtr<u8, u32>,
     ) -> Result<(), types::Error> {
         self.cli()
             .get_arguments()
@@ -1212,8 +1216,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     fn environ_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        environ: GuestPtr<GuestPtr<u8>>,
-        environ_buf: GuestPtr<u8>,
+        environ: GuestPtr<GuestPtr<u8, u32>, u32>,
+        environ_buf: GuestPtr<u8, u32>,
     ) -> Result<(), types::Error> {
         self.cli()
             .get_environment()
@@ -1812,7 +1816,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        path: GuestPtr<u8>,
+        path: GuestPtr<u8, u32>,
         path_max_len: types::Size,
     ) -> Result<(), types::Error> {
         let path_max_len = path_max_len.try_into()?;
@@ -1922,7 +1926,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         fd: types::Fd,
-        buf: GuestPtr<u8>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
         cookie: types::Dircookie,
     ) -> Result<types::Size, types::Error> {
@@ -2021,7 +2025,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
         let path = read_string(memory, path)?;
@@ -2039,7 +2043,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<types::Filestat, types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
         let path = read_string(memory, path)?;
@@ -2086,7 +2090,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         flags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         atim: types::Timestamp,
         mtim: types::Timestamp,
         fst_flags: types::Fstflags,
@@ -2118,9 +2122,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
         src_flags: types::Lookupflags,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         target_fd: types::Fd,
-        target_path: GuestPtr<str>,
+        target_path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let src_fd = self.get_dir_fd(src_fd)?;
         let target_fd = self.get_dir_fd(target_fd)?;
@@ -2140,7 +2144,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
         dirflags: types::Lookupflags,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
         oflags: types::Oflags,
         fs_rights_base: types::Rights,
         _fs_rights_inheriting: types::Rights,
@@ -2200,8 +2204,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
-        buf: GuestPtr<u8>,
+        path: GuestPtr<str, u32>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<types::Size, types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
@@ -2225,7 +2229,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
         let path = read_string(memory, path)?;
@@ -2240,9 +2244,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         src_fd: types::Fd,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dest_fd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let src_fd = self.get_dir_fd(src_fd)?;
         let dest_fd = self.get_dir_fd(dest_fd)?;
@@ -2258,9 +2262,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     async fn path_symlink(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        src_path: GuestPtr<str>,
+        src_path: GuestPtr<str, u32>,
         dirfd: types::Fd,
-        dest_path: GuestPtr<str>,
+        dest_path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
         let src_path = read_string(memory, src_path)?;
@@ -2276,7 +2280,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         &mut self,
         memory: &mut GuestMemory<'_>,
         dirfd: types::Fd,
-        path: GuestPtr<str>,
+        path: GuestPtr<str, u32>,
     ) -> Result<(), types::Error> {
         let dirfd = self.get_dir_fd(dirfd)?;
         let path = memory.as_cow_str(path)?.into_owned();
@@ -2290,8 +2294,8 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     async fn poll_oneoff(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        subs: GuestPtr<types::Subscription>,
-        events: GuestPtr<types::Event>,
+        subs: GuestPtr<types::Subscription, u32>,
+        events: GuestPtr<types::Event, u32>,
         nsubscriptions: types::Size,
     ) -> Result<types::Size, types::Error> {
         if nsubscriptions == 0 {
@@ -2335,7 +2339,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
 
         let n = usize::try_from(nsubscriptions).unwrap_or(usize::MAX);
         let mut pollables = Vec::with_capacity(n);
-        for sub in subs.iter() {
+        for sub in subs.iter()? {
             let sub = memory.read(sub?)?;
             let p = match sub.u {
                 types::SubscriptionU::Clock(types::SubscriptionClock {
@@ -2451,9 +2455,9 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
 
         let mut count: types::Size = 0;
         for (sub, event) in (0..)
-            .zip(subs.iter())
+            .zip(subs.iter()?)
             .filter_map(|(idx, sub)| ready.contains(&idx).then_some(sub))
-            .zip(events.iter())
+            .zip(events.iter()?)
         {
             let sub = memory.read(sub?)?;
             let event = event?;
@@ -2579,7 +2583,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
     fn random_get(
         &mut self,
         memory: &mut GuestMemory<'_>,
-        buf: GuestPtr<u8>,
+        buf: GuestPtr<u8, u32>,
         buf_len: types::Size,
     ) -> Result<(), types::Error> {
         let rand = self

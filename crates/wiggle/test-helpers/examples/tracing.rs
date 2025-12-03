@@ -36,7 +36,7 @@ impl_errno!(types::Errno);
 
 /// When the `errors` mapping in witx is non-empty, we need to impl the
 /// types::UserErrorConversion trait that wiggle generates from that mapping.
-impl<'a> types::UserErrorConversion for WasiCtx<'a> {
+impl<'a> types::UserErrorConversion for WasiCtx<'a, u32> {
     fn errno_from_rich_error(&mut self, e: RichError) -> Result<types::Errno> {
         wiggle::tracing::debug!(
             rich_error = wiggle::tracing::field::debug(&e),
@@ -53,7 +53,7 @@ impl<'a> types::UserErrorConversion for WasiCtx<'a> {
     }
 }
 
-impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a> {
+impl<'a> one_error_conversion::OneErrorConversion for WasiCtx<'a, u32> {
     fn foo(
         &mut self,
         _: &mut GuestMemory<'_>,

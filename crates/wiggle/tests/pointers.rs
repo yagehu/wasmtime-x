@@ -8,14 +8,14 @@ wiggle::from_witx!({
 
 impl_errno!(types::Errno);
 
-impl<'a> pointers::Pointers for WasiCtx<'a> {
+impl<'a> pointers::Pointers for WasiCtx<'a, u32> {
     fn pointers_and_enums(
         &mut self,
         memory: &mut GuestMemory<'_>,
         input1: types::Excuse,
-        input2_ptr: GuestPtr<types::Excuse>,
-        input3_ptr: GuestPtr<types::Excuse>,
-        input4_ptr_ptr: GuestPtr<GuestPtr<types::Excuse>>,
+        input2_ptr: GuestPtr<types::Excuse, u32>,
+        input3_ptr: GuestPtr<types::Excuse, u32>,
+        input4_ptr_ptr: GuestPtr<GuestPtr<types::Excuse, u32>, u32>,
     ) -> Result<(), types::Errno> {
         println!("BAZ input1 {input1:?}");
         let input2: types::Excuse = memory.read(input2_ptr).map_err(|e| {
@@ -39,10 +39,11 @@ impl<'a> pointers::Pointers for WasiCtx<'a> {
         println!("wrote to input2_ref {input3:?}");
 
         // Read ptr value from mutable ptr:
-        let input4_ptr: GuestPtr<types::Excuse> = memory.read(input4_ptr_ptr).map_err(|e| {
-            eprintln!("input4_ptr_ptr error: {e}");
-            types::Errno::InvalidArg
-        })?;
+        let input4_ptr: GuestPtr<types::Excuse, u32> =
+            memory.read(input4_ptr_ptr).map_err(|e| {
+                eprintln!("input4_ptr_ptr error: {e}");
+                types::Errno::InvalidArg
+            })?;
 
         // Read enum value from that ptr:
         let input4: types::Excuse = memory.read(input4_ptr).map_err(|e| {
@@ -125,6 +126,7 @@ impl PointersAndEnumsExercise {
             })
             .boxed()
     }
+
     pub fn test(&self) {
         let mut ctx = WasiCtx::new();
         let mut host_memory = HostMemory::new();

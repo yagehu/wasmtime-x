@@ -1,13 +1,19 @@
-use crate::names;
+use crate::{Context, names};
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use witx::Layout;
 
-pub(super) fn define_handle(name: &witx::Id, h: &witx::HandleDatatype) -> TokenStream {
+pub(super) fn define_handle(
+    ctx: &Context,
+    name: &witx::Id,
+    h: &witx::HandleDatatype,
+) -> TokenStream {
     let ident = names::type_(name);
-    let size = h.mem_size_align().size as u32;
+    let size = h.mem_size_align().size;
     let align = h.mem_size_align().align;
+    let width = &ctx.width;
+
     quote! {
         #[repr(transparent)]
         #[derive(Copy, Clone, Debug, ::std::hash::Hash, Eq, PartialEq)]
@@ -53,10 +59,10 @@ pub(super) fn define_handle(name: &witx::Id, h: &witx::HandleDatatype) -> TokenS
             }
         }
 
-        impl wiggle::GuestType for #ident {
+        impl wiggle::GuestType<#width> for #ident {
             #[inline]
-            fn guest_size() -> u32 {
-                #size
+            fn guest_size() -> #width {
+                #width::try_from(#size).unwrap()
             }
 
             #[inline]
@@ -65,12 +71,19 @@ pub(super) fn define_handle(name: &witx::Id, h: &witx::HandleDatatype) -> TokenS
             }
 
             #[inline]
-            fn read(mem: &wiggle::GuestMemory, location: wiggle::GuestPtr<#ident>) -> Result<#ident, wiggle::GuestError> {
+            fn read(
+                mem: &wiggle::GuestMemory,
+                location: wiggle::GuestPtr<#ident, #width>,
+            ) -> Result<#ident, wiggle::GuestError<#width>> {
                 Ok(#ident(u32::read(mem, location.cast())?))
             }
 
             #[inline]
-            fn write(mem: &mut wiggle::GuestMemory, location: wiggle::GuestPtr<Self>, val: Self) -> Result<(), wiggle::GuestError> {
+            fn write(
+                mem: &mut wiggle::GuestMemory,
+                location: wiggle::GuestPtr<Self, #width>,
+                val: Self,
+            ) -> Result<(), wiggle::GuestError<#width>> {
                 u32::write(mem, location.cast(), val.0)
             }
         }

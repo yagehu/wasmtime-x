@@ -4,7 +4,7 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use witx::{BuiltinType, Id, Type, TypeRef, WasmType};
 
-use crate::UserErrorType;
+use crate::{Context, UserErrorType};
 
 pub fn type_(id: &Id) -> Ident {
     escape_id(id, NamingConvention::CamelCase)
@@ -35,7 +35,9 @@ pub fn wasm_type(ty: WasmType) -> TokenStream {
     }
 }
 
-pub fn type_ref(tref: &TypeRef, lifetime: TokenStream) -> TokenStream {
+pub fn type_ref(ctx: &Context, tref: &TypeRef, lifetime: TokenStream) -> TokenStream {
+    let width = &ctx.width;
+
     match tref {
         TypeRef::Name(nt) => {
             let ident = type_(&nt.name);
@@ -44,26 +46,26 @@ pub fn type_ref(tref: &TypeRef, lifetime: TokenStream) -> TokenStream {
         TypeRef::Value(ty) => match &**ty {
             Type::Builtin(builtin) => builtin_type(*builtin),
             Type::Pointer(pointee) | Type::ConstPointer(pointee) => {
-                let pointee_type = type_ref(&pointee, lifetime.clone());
-                quote!(wiggle::GuestPtr<#pointee_type>)
+                let pointee_type = type_ref(ctx, &pointee, lifetime.clone());
+                quote!(wiggle::GuestPtr<#pointee_type, #width>)
             }
             Type::List(pointee) => match &**pointee.type_() {
                 Type::Builtin(BuiltinType::Char) => {
-                    quote!(wiggle::GuestPtr<str>)
+                    quote!(wiggle::GuestPtr<str, #width>)
                 }
                 _ => {
-                    let pointee_type = type_ref(&pointee, lifetime.clone());
-                    quote!(wiggle::GuestPtr<[#pointee_type]>)
+                    let pointee_type = type_ref(ctx, &pointee, lifetime.clone());
+                    quote!(wiggle::GuestPtr<[#pointee_type], #width>)
                 }
             },
             Type::Variant(v) => match v.as_expected() {
                 Some((ok, err)) => {
                     let ok = match ok {
-                        Some(ty) => type_ref(ty, lifetime.clone()),
+                        Some(ty) => type_ref(ctx, ty, lifetime.clone()),
                         None => quote!(()),
                     };
                     let err = match err {
-                        Some(ty) => type_ref(ty, lifetime.clone()),
+                        Some(ty) => type_ref(ctx, ty, lifetime.clone()),
                         None => quote!(()),
                     };
                     quote!(Result<#ok, #err>)
@@ -74,7 +76,7 @@ pub fn type_ref(tref: &TypeRef, lifetime: TokenStream) -> TokenStream {
                 let types = r
                     .members
                     .iter()
-                    .map(|m| type_ref(&m.tref, lifetime.clone()))
+                    .map(|m| type_ref(ctx, &m.tref, lifetime.clone()))
                     .collect::<Vec<_>>();
                 quote!((#(#types,)*))
             }

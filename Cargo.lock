@@ -5278,7 +5278,7 @@ dependencies = [
  "wasmtime",
  "wiggle-macro",
  "wiggle-test",
- "witx",
+ "witx 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -5290,7 +5290,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
- "witx",
+ "witx 0.9.1 (git+https://github.com/yagehu/wasi.git?branch=yagehu%2Fmemory64)",
 ]
 
 [[package]]
@@ -5302,6 +5302,7 @@ dependencies = [
  "syn 2.0.106",
  "wiggle",
  "wiggle-generate",
+ "witx 0.9.1 (git+https://github.com/yagehu/wasi.git?branch=yagehu%2Fmemory64)",
 ]
 
 [[package]]
@@ -5743,6 +5744,17 @@ name = "witx"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e366f27a5cabcddb2706a78296a40b8fcc451e1a6aba2fc1d94b4a01bdaaef4b"
+dependencies = [
+ "anyhow",
+ "log",
+ "thiserror 1.0.65",
+ "wast 35.0.2",
+]
+
+[[package]]
+name = "witx"
+version = "0.9.1"
+source = "git+https://github.com/yagehu/wasi.git?branch=yagehu%2Fmemory64#305983d854c315767a6cd6e45ba2ccb6a64b02f2"
 dependencies = [
  "anyhow",
  "log",

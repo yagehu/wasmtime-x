@@ -48,13 +48,13 @@ impl StringArray {
     pub fn write_to_guest(
         &self,
         memory: &mut GuestMemory<'_>,
-        buffer: GuestPtr<u8>,
-        element_heads: GuestPtr<GuestPtr<u8>>,
+        buffer: GuestPtr<u8, u32>,
+        element_heads: GuestPtr<GuestPtr<u8, u32>, u32>,
     ) -> Result<(), Error> {
         let element_heads = element_heads.as_array(self.number_elements());
         let buffer = buffer.as_array(self.cumulative_size());
         let mut cursor = 0;
-        for (elem, head) in self.elems.iter().zip(element_heads.iter()) {
+        for (elem, head) in self.elems.iter().zip(element_heads.iter()?) {
             let bytes = elem.as_bytes();
             let len = bytes.len() as u32;
             {

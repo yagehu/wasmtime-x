@@ -1,8 +1,18 @@
-use crate::Region;
-use thiserror::Error;
+use std::error::Error as StdError;
+use std::fmt::{Debug, Display};
+use std::ops::Deref;
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum GuestError {
+use crate::{Region, Width};
+
+// pub trait BoxedError: Debug + Display + Deref<Target = dyn StdError> {}
+
+// impl<E: Debug + Display + Deref<Target = dyn StdError>> BoxedError for E {}
+pub trait BoxedError: Debug + Display + Deref<Target = dyn StdError> {}
+
+impl<E: Debug + Display + Deref<Target = dyn StdError>> BoxedError for E {}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GuestError<W: Width> {
     #[error("Invalid flag value {0}")]
     InvalidFlagValue(&'static str),
     #[error("Invalid enum value {0}")]
@@ -10,9 +20,9 @@ pub enum GuestError {
     #[error("Pointer overflow")]
     PtrOverflow,
     #[error("Pointer out of bounds: {0:?}")]
-    PtrOutOfBounds(Region),
+    PtrOutOfBounds(Region<W>),
     #[error("Pointer not aligned to {1}: {0:?}")]
-    PtrNotAligned(Region, u32),
+    PtrNotAligned(Region<W>, u32),
     #[error("Slice length mismatch")]
     SliceLengthsDiffer,
     #[error("In func {modulename}::{funcname} at {location}: {err}")]
@@ -20,8 +30,9 @@ pub enum GuestError {
         modulename: &'static str,
         funcname: &'static str,
         location: &'static str,
+
         #[source]
-        err: Box<GuestError>,
+        err: Box<dyn std::error::Error + Send + Sync>,
     },
     #[error("Invalid UTF-8 encountered: {0:?}")]
     InvalidUtf8(#[from] ::std::str::Utf8Error),

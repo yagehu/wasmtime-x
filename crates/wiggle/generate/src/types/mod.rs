@@ -7,36 +7,40 @@ mod variant;
 
 use crate::codegen_settings::ErrorType;
 use crate::lifetimes::LifetimeExt;
-use crate::names;
+use crate::{Context, names};
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-pub fn define_datatype(namedtype: &witx::NamedType, error: Option<&ErrorType>) -> TokenStream {
+pub fn define_datatype(
+    ctx: &Context,
+    namedtype: &witx::NamedType,
+    error: Option<&ErrorType>,
+) -> TokenStream {
     match &namedtype.tref {
         witx::TypeRef::Name(alias_to) => define_alias(&namedtype.name, &alias_to),
         witx::TypeRef::Value(v) => match &**v {
             witx::Type::Record(r) => match r.bitflags_repr() {
-                Some(repr) => flags::define_flags(&namedtype.name, repr, &r),
-                None => record::define_struct(&namedtype.name, &r),
+                Some(repr) => flags::define_flags(ctx, &namedtype.name, repr, &r),
+                None => record::define_struct(ctx, &namedtype.name, &r),
             },
             witx::Type::Variant(v) => match error {
                 Some(ErrorType::Generated(error)) => {
-                    let d = variant::define_variant(&namedtype.name, &v, true);
+                    let d = variant::define_variant(ctx, &namedtype.name, &v, true);
                     let e = error::define_error(&namedtype.name, &v, error);
                     quote!( #d #e )
                 }
-                _ => variant::define_variant(&namedtype.name, &v, false),
+                _ => variant::define_variant(ctx, &namedtype.name, &v, false),
             },
-            witx::Type::Handle(h) => handle::define_handle(&namedtype.name, &h),
+            witx::Type::Handle(h) => handle::define_handle(ctx, &namedtype.name, &h),
             witx::Type::Builtin(b) => define_builtin(&namedtype.name, *b),
             witx::Type::Pointer(p) => {
-                define_witx_pointer(&namedtype.name, quote!(wiggle::GuestPtr), p)
+                define_witx_pointer(ctx, &namedtype.name, quote!(wiggle::GuestPtr), p)
             }
             witx::Type::ConstPointer(p) => {
-                define_witx_pointer(&namedtype.name, quote!(wiggle::GuestPtr), p)
+                define_witx_pointer(ctx, &namedtype.name, quote!(wiggle::GuestPtr), p)
             }
-            witx::Type::List(arr) => define_witx_list(&namedtype.name, &arr),
+            witx::Type::List(arr) => define_witx_list(ctx, &namedtype.name, &arr),
         },
     }
 }
@@ -58,20 +62,24 @@ fn define_builtin(name: &witx::Id, builtin: witx::BuiltinType) -> TokenStream {
 }
 
 fn define_witx_pointer(
+    ctx: &Context,
     name: &witx::Id,
     pointer_type: TokenStream,
     pointee: &witx::TypeRef,
 ) -> TokenStream {
     let ident = names::type_(name);
-    let pointee_type = names::type_ref(pointee, quote!('a));
+    let pointee_type = names::type_ref(ctx, pointee, quote!('a));
+    let width = &ctx.width;
 
-    quote!(pub type #ident<'a> = #pointer_type<'a, #pointee_type>;)
+    quote!(pub type #ident<'a> = #pointer_type<'a, #pointee_type, #width>;)
 }
 
-fn define_witx_list(name: &witx::Id, arr_raw: &witx::TypeRef) -> TokenStream {
+fn define_witx_list(ctx: &Context, name: &witx::Id, arr_raw: &witx::TypeRef) -> TokenStream {
     let ident = names::type_(name);
-    let pointee_type = names::type_ref(arr_raw, quote!());
-    quote!(pub type #ident = wiggle::GuestPtr<[#pointee_type]>;)
+    let pointee_type = names::type_ref(ctx, arr_raw, quote!());
+    let width = &ctx.width;
+
+    quote!(pub type #ident = wiggle::GuestPtr<[#pointee_type], #width>;)
 }
 
 pub fn int_repr_tokens(int_repr: witx::IntRepr) -> TokenStream {
