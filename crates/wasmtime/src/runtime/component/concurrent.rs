@@ -2928,9 +2928,9 @@ impl Instance {
         log::trace!("creating new thread");
 
         let start_func_ty = FuncType::new(store.engine(), [ValType::I32], []);
-        let instance = self.id().get_mut(store.0);
+        let (instance, registry) = self.id().get_mut_and_registry(store.0);
         let callee = instance
-            .index_runtime_func_table(start_func_table_idx, start_func_idx as u64)?
+            .index_runtime_func_table(registry, start_func_table_idx, start_func_idx as u64)?
             .ok_or_else(|| {
                 anyhow!("the start function index points to an uninitialized function")
             })?;
@@ -3608,6 +3608,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_write(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Future(ty),
                 options,
                 None,
@@ -3631,6 +3632,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_read(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Future(ty),
                 options,
                 None,
@@ -3655,6 +3657,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_write(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Stream(ty),
                 options,
                 None,
@@ -3679,6 +3682,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_read(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Stream(ty),
                 options,
                 None,
@@ -3716,6 +3720,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_write(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Stream(ty),
                 options,
                 Some(FlatAbi {
@@ -3745,6 +3750,7 @@ impl<T: 'static> VMComponentAsyncStore for StoreInner<T> {
         instance
             .guest_read(
                 StoreContextMut(self),
+                caller,
                 TransmitIndex::Stream(ty),
                 options,
                 Some(FlatAbi {
