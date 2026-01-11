@@ -7,10 +7,10 @@ use crate::isa::{CallConv, FunctionAlignment};
 use crate::machinst::*;
 use crate::{CodegenError, CodegenResult, settings};
 use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt::Write;
 use smallvec::SmallVec;
-use std::fmt::Write;
-use std::string::{String, ToString};
 pub mod regs;
 pub use self::regs::*;
 pub mod imms;
@@ -55,7 +55,7 @@ pub struct ReturnCallInfo<T> {
 fn inst_size_test() {
     // This test will help with unintentionally growing the size
     // of the Inst enum.
-    assert_eq!(32, std::mem::size_of::<Inst>());
+    assert_eq!(32, core::mem::size_of::<Inst>());
 }
 
 /// A register pair. Enum so it can be destructured in ISLE.
@@ -222,7 +222,6 @@ impl Inst {
             | Inst::AllocateArgs { .. }
             | Inst::Call { .. }
             | Inst::ReturnCall { .. }
-            | Inst::PatchableCall { .. }
             | Inst::Args { .. }
             | Inst::Rets { .. }
             | Inst::Ret { .. }
@@ -900,7 +899,7 @@ fn s390x_get_operands(inst: &mut Inst, collector: &mut DenyReuseVisitor<impl Ope
             collector.reg_use(rn);
         }
         Inst::AllocateArgs { .. } => {}
-        Inst::Call { link, info, .. } | Inst::PatchableCall { link, info, .. } => {
+        Inst::Call { link, info, .. } => {
             let CallInfo {
                 dest,
                 uses,
@@ -1126,16 +1125,14 @@ impl MachInst for Inst {
 
     fn is_safepoint(&self) -> bool {
         match self {
-            Inst::Call { .. } | Inst::PatchableCall { .. } => true,
+            Inst::Call { .. } => true,
             _ => false,
         }
     }
 
     fn call_type(&self) -> CallType {
         match self {
-            Inst::Call { .. } | Inst::PatchableCall { .. } | Inst::ElfTlsGetOffset { .. } => {
-                CallType::Regular
-            }
+            Inst::Call { .. } | Inst::ElfTlsGetOffset { .. } => CallType::Regular,
 
             Inst::ReturnCall { .. } => CallType::TailCall,
 
@@ -1164,8 +1161,8 @@ impl MachInst for Inst {
         }
     }
 
-    fn gen_nop_unit() -> SmallVec<[u8; 8]> {
-        smallvec::smallvec![0x07, 0x07]
+    fn gen_nop_units() -> Vec<Vec<u8>> {
+        vec![vec![0x07, 0x07]]
     }
 
     fn rc_for_type(ty: Type) -> CodegenResult<(&'static [RegClass], &'static [Type])> {
@@ -3195,8 +3192,7 @@ impl Inst {
                     format!("slgfi {}, {}", show_reg(stack_reg()), size)
                 }
             }
-            &Inst::Call { link, ref info } | &Inst::PatchableCall { link, ref info } => {
-                let is_patchable = matches!(self, Inst::PatchableCall { .. });
+            &Inst::Call { link, ref info } => {
                 state.nominal_sp_offset = 0;
                 let link = link.to_reg();
                 let (opcode, dest) = match &info.dest {
@@ -3227,16 +3223,14 @@ impl Inst {
                 } else {
                     "".to_string()
                 };
-                let patchable = if is_patchable { " ; patchable" } else { "" };
                 format!(
-                    "{} {}, {}{}{}{}{}",
+                    "{} {}, {}{}{}{}",
                     opcode,
                     show_reg(link),
                     dest,
                     callee_pop_size,
                     retval_loads,
                     try_call,
-                    patchable
                 )
             }
             &Inst::ReturnCall { ref info } => {

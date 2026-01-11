@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde_derive::Deserialize;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use wasmtime_environ::prelude::*;
 
 /// Limits for running wast tests.
 ///
@@ -52,6 +52,26 @@ pub fn find_tests(root: &Path) -> Result<Vec<WastTest>> {
         &FindConfig::Infer(component_test_config),
     )
     .with_context(|| format!("failed to add tests from `{}`", cm_tests.display()))?;
+
+    // Temporarily work around upstream tests that loop forever.
+    //
+    // Now that `thread.yield` and `CALLBACK_CODE_YIELD` are both no-ops in
+    // non-blocking contexts, these tests need to be updated; meanwhile, we skip
+    // them.
+    //
+    // TODO: remove this once
+    // https://github.com/WebAssembly/component-model/pull/578 has been merged:
+    {
+        let skip_list = &["drop-subtask.wast", "async-calls-sync.wast"];
+        tests.retain(|test| {
+            test.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| !skip_list.contains(&name))
+                .unwrap_or(true)
+        });
+    }
+
     Ok(tests)
 }
 
@@ -164,9 +184,15 @@ fn component_test_config(test: &Path) -> TestConfig {
     ret.multi_memory = Some(true);
 
     if let Some(parent) = test.parent() {
-        if parent.ends_with("async") {
+        if parent.ends_with("async")
+            || ["trap-in-post-return.wast"]
+                .into_iter()
+                .any(|name| Some(name) == test.file_name().and_then(|s| s.to_str()))
+        {
             ret.component_model_async = Some(true);
+            ret.component_model_async_stackful = Some(true);
             ret.component_model_async_builtins = Some(true);
+            ret.component_model_threading = Some(true);
         }
         if parent.ends_with("wasm-tools") {
             ret.memory64 = Some(true);
@@ -672,19 +698,6 @@ impl WastTest {
                     }
                 }
             }
-        }
-
-        let failing_component_model_tests = [
-            // FIXME(#11683)
-            "component-model/test/values/trap-in-post-return.wast",
-            "component-model/test/wasmtime/resources.wast",
-            "component-model/test/wasm-tools/naming.wast",
-        ];
-        if failing_component_model_tests
-            .iter()
-            .any(|part| self.path.ends_with(part))
-        {
-            return true;
         }
 
         // Not implemented in Wasmtime anywhere yet.

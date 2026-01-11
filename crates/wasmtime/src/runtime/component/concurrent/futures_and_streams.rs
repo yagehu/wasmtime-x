@@ -3,13 +3,20 @@ use super::{Event, GlobalErrorContextRefCount, Waitable, WaitableCommon};
 use crate::component::concurrent::{ConcurrentState, WorkItem, tls};
 use crate::component::func::{self, LiftContext, LowerContext};
 use crate::component::matching::InstanceType;
-use crate::component::values::{ErrorContextAny, FutureAny, StreamAny};
-use crate::component::{AsAccessor, Instance, Lift, Lower, Val, WasmList};
+use crate::component::types;
+use crate::component::values::ErrorContextAny;
+use crate::component::{
+    AsAccessor, ComponentInstanceId, ComponentType, FutureAny, Instance, Lift, Lower, StreamAny,
+    Val, WasmList,
+};
 use crate::store::{StoreOpaque, StoreToken};
 use crate::vm::component::{ComponentInstance, HandleTable, TransmitLocalState};
 use crate::vm::{AlwaysMut, VMStore};
 use crate::{AsContextMut, StoreContextMut, ValRaw};
-use anyhow::{Context as _, Error, Result, anyhow, bail};
+use crate::{
+    Error, Result, bail,
+    error::{Context as _, format_err},
+};
 use buffers::{Extender, SliceBuffer, UntypedWriteBuffer};
 use core::fmt;
 use core::future;
@@ -156,7 +163,7 @@ fn lower<T: func::Lower + Send + 'static, B: WriteBuffer<T>, U: 'static>(
         .as_slice_mut()
         .get_mut(address..)
         .and_then(|b| b.get_mut(..T::SIZE32 * count))
-        .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
+        .ok_or_else(|| crate::format_err!("read pointer out of bounds of memory"))?;
 
     if let Some(ty) = payload(ty, lower.types) {
         T::linear_store_list_to_memory(lower, ty, address, &buffer.remaining()[..count])?;
@@ -190,7 +197,7 @@ fn lift<T: func::Lift + Send + 'static, B: ReadBuffer<T>>(
         lift.memory()
             .get(address..)
             .and_then(|b| b.get(..T::SIZE32 * count))
-            .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
+            .ok_or_else(|| crate::format_err!("write pointer out of bounds of memory"))?;
 
         let list = &WasmList::new(address, count, lift, ty)?;
         T::linear_lift_into_from_memory(lift, list, &mut Extender(buffer))?
@@ -330,6 +337,20 @@ pub struct DirectDestination<'a, D: 'static> {
     id: TableId<TransmitState>,
     host_buffer: Option<&'a mut Cursor<Vec<u8>>>,
     store: StoreContextMut<'a, D>,
+}
+
+impl<D: 'static> std::io::Write for DirectDestination<'_, D> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let rem = self.remaining();
+        let n = rem.len().min(buf.len());
+        rem[..n].copy_from_slice(&buf[..n]);
+        self.mark_written(n);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl<D: 'static> DirectDestination<'_, D> {
@@ -832,6 +853,16 @@ pub struct DirectSource<'a, D: 'static> {
     store: StoreContextMut<'a, D>,
 }
 
+impl<D: 'static> std::io::Read for DirectSource<'_, D> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let rem = self.remaining();
+        let n = rem.len().min(buf.len());
+        buf[..n].copy_from_slice(&rem[..n]);
+        self.mark_read(n);
+        Ok(n)
+    }
+}
+
 impl<D: 'static> DirectSource<'_, D> {
     /// Provide direct access to the writer's buffer.
     pub fn remaining(&mut self) -> &[u8] {
@@ -1136,11 +1167,15 @@ impl<T> FutureReader<T> {
         )
     }
 
-    fn new_(id: TableId<TransmitHandle>) -> Self {
+    pub(super) fn new_(id: TableId<TransmitHandle>) -> Self {
         Self {
             id,
             _phantom: PhantomData,
         }
+    }
+
+    pub(super) fn id(&self) -> TableId<TransmitHandle> {
+        self.id
     }
 
     /// Set the consumer that accepts the result of this future.
@@ -1194,51 +1229,18 @@ impl<T> FutureReader<T> {
             .set_consumer(self.id, TransmitKind::Future, Consumer(consumer));
     }
 
-    /// Convert this `FutureReader` into a [`Val`].
-    // See TODO comment for `FutureAny`; this is prone to handle leakage.
-    pub fn into_val(self) -> Val {
-        Val::Future(FutureAny(self.id.rep()))
-    }
-
-    /// Attempt to convert the specified [`Val`] to a `FutureReader`.
-    pub fn from_val(mut store: impl AsContextMut<Data: Send>, value: &Val) -> Result<Self> {
-        let Val::Future(FutureAny(rep)) = value else {
-            bail!("expected `future`; got `{}`", value.desc());
-        };
-        let store = store.as_context_mut();
-        let id = TableId::<TransmitHandle>::new(*rep);
-        store.0.concurrent_state_mut().get_mut(id)?; // Just make sure it's present
+    /// Transfer ownership of the read end of a future from a guest to the host.
+    fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
+        let id = lift_index_to_future(cx, ty, index)?;
         Ok(Self::new_(id))
     }
 
-    /// Transfer ownership of the read end of a future from a guest to the host.
-    fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
-        match ty {
-            InterfaceType::Future(src) => {
-                let handle_table = cx
-                    .instance_mut()
-                    .table_for_transmit(TransmitIndex::Future(src));
-                let (rep, is_done) = handle_table.future_remove_readable(src, index)?;
-                if is_done {
-                    bail!("cannot lift future after being notified that the writable end dropped");
-                }
-                let id = TableId::<TransmitHandle>::new(rep);
-                let concurrent_state = cx.concurrent_state_mut();
-                let future = concurrent_state.get_mut(id)?;
-                future.common.handle = None;
-                let state = future.state;
-
-                if concurrent_state.get_mut(state)?.done {
-                    bail!("cannot lift future after previous read succeeded");
-                }
-
-                Ok(Self::new_(id))
-            }
-            _ => func::bad_type_info(),
-        }
-    }
-
-    /// Close this `FutureReader`, writing the default value.
+    /// Close this `FutureReader`.
+    ///
+    /// This will close this half of the future which will signal to a pending
+    /// write, if any, that the reader side is dropped. If the writer half has
+    /// not yet written a value then when it attempts to write a value it will
+    /// see that this end is closed.
     ///
     /// # Panics
     ///
@@ -1246,13 +1248,7 @@ impl<T> FutureReader<T> {
     /// this future. Usage of this future after calling `close` will also cause
     /// a panic.
     pub fn close(&mut self, mut store: impl AsContextMut) {
-        // `self` should never be used again, but leave an invalid handle there just in case.
-        let id = mem::replace(&mut self.id, TableId::new(u32::MAX));
-        store
-            .as_context_mut()
-            .0
-            .host_drop_reader(id, TransmitKind::Future)
-            .unwrap();
+        future_close(store.as_context_mut().0, &mut self.id)
     }
 
     /// Convenience method around [`Self::close`].
@@ -1271,6 +1267,32 @@ impl<T> FutureReader<T> {
     {
         GuardedFutureReader::new(accessor, self)
     }
+
+    /// Attempts to convert this [`FutureReader<T>`] to a [`FutureAny`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if `self` does not belong to
+    /// `store`.
+    pub fn try_into_future_any(self, store: impl AsContextMut) -> Result<FutureAny>
+    where
+        T: ComponentType + 'static,
+    {
+        FutureAny::try_from_future_reader(store, self)
+    }
+
+    /// Attempts to convert a [`FutureAny`] into a [`FutureReader<T>`].
+    ///
+    /// # Errors
+    ///
+    /// This function will fail if `T` doesn't match the type of the value that
+    /// `future` is sending.
+    pub fn try_from_future_any(future: FutureAny) -> Result<Self>
+    where
+        T: ComponentType + 'static,
+    {
+        future.try_into_future_reader()
+    }
 }
 
 impl<T> fmt::Debug for FutureReader<T> {
@@ -1281,16 +1303,51 @@ impl<T> fmt::Debug for FutureReader<T> {
     }
 }
 
+pub(super) fn future_close(store: &mut StoreOpaque, id: &mut TableId<TransmitHandle>) {
+    let id = mem::replace(id, TableId::new(u32::MAX));
+    store.host_drop_reader(id, TransmitKind::Future).unwrap();
+}
+
 /// Transfer ownership of the read end of a future from the host to a guest.
-pub(crate) fn lower_future_to_index<U>(
-    rep: u32,
+pub(super) fn lift_index_to_future(
+    cx: &mut LiftContext<'_>,
+    ty: InterfaceType,
+    index: u32,
+) -> Result<TableId<TransmitHandle>> {
+    match ty {
+        InterfaceType::Future(src) => {
+            let handle_table = cx
+                .instance_mut()
+                .table_for_transmit(TransmitIndex::Future(src));
+            let (rep, is_done) = handle_table.future_remove_readable(src, index)?;
+            if is_done {
+                bail!("cannot lift future after being notified that the writable end dropped");
+            }
+            let id = TableId::<TransmitHandle>::new(rep);
+            let concurrent_state = cx.concurrent_state_mut();
+            let future = concurrent_state.get_mut(id)?;
+            future.common.handle = None;
+            let state = future.state;
+
+            if concurrent_state.get_mut(state)?.done {
+                bail!("cannot lift future after previous read succeeded");
+            }
+
+            Ok(id)
+        }
+        _ => func::bad_type_info(),
+    }
+}
+
+/// Transfer ownership of the read end of a future from the host to a guest.
+pub(super) fn lower_future_to_index<U>(
+    id: TableId<TransmitHandle>,
     cx: &mut LowerContext<'_, U>,
     ty: InterfaceType,
 ) -> Result<u32> {
     match ty {
         InterfaceType::Future(dst) => {
             let concurrent_state = cx.store.0.concurrent_state_mut();
-            let id = TableId::<TransmitHandle>::new(rep);
             let state = concurrent_state.get_mut(id)?.state;
             let rep = concurrent_state.get_mut(state)?.read_handle.rep();
 
@@ -1309,32 +1366,31 @@ pub(crate) fn lower_future_to_index<U>(
 
 // SAFETY: This relies on the `ComponentType` implementation for `u32` being
 // safe and correct since we lift and lower future handles as `u32`s.
-unsafe impl<T: Send + Sync> func::ComponentType for FutureReader<T> {
+unsafe impl<T: ComponentType> ComponentType for FutureReader<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
 
-    fn typecheck(ty: &InterfaceType, _types: &InstanceType<'_>) -> Result<()> {
+    fn typecheck(ty: &InterfaceType, types: &InstanceType<'_>) -> Result<()> {
         match ty {
-            InterfaceType::Future(_) => Ok(()),
+            InterfaceType::Future(ty) => {
+                let ty = types.types[*ty].ty;
+                types::typecheck_payload::<T>(types.types[ty].payload.as_ref(), types)
+            }
             other => bail!("expected `future`, found `{}`", func::desc(other)),
         }
     }
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T: Send + Sync> func::Lower for FutureReader<T> {
+unsafe impl<T: ComponentType> func::Lower for FutureReader<T> {
     fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         dst: &mut MaybeUninit<Self::Lower>,
     ) -> Result<()> {
-        lower_future_to_index(self.id.rep(), cx, ty)?.linear_lower_to_flat(
-            cx,
-            InterfaceType::U32,
-            dst,
-        )
+        lower_future_to_index(self.id, cx, ty)?.linear_lower_to_flat(cx, InterfaceType::U32, dst)
     }
 
     fn linear_lower_to_memory<U>(
@@ -1343,7 +1399,7 @@ unsafe impl<T: Send + Sync> func::Lower for FutureReader<T> {
         ty: InterfaceType,
         offset: usize,
     ) -> Result<()> {
-        lower_future_to_index(self.id.rep(), cx, ty)?.linear_lower_to_memory(
+        lower_future_to_index(self.id, cx, ty)?.linear_lower_to_memory(
             cx,
             InterfaceType::U32,
             offset,
@@ -1352,7 +1408,7 @@ unsafe impl<T: Send + Sync> func::Lower for FutureReader<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T: Send + Sync> func::Lift for FutureReader<T> {
+unsafe impl<T: ComponentType> func::Lift for FutureReader<T> {
     fn linear_lift_from_flat(
         cx: &mut LiftContext<'_>,
         ty: InterfaceType,
@@ -1454,11 +1510,15 @@ impl<T> StreamReader<T> {
         )
     }
 
-    fn new_(id: TableId<TransmitHandle>) -> Self {
+    pub(super) fn new_(id: TableId<TransmitHandle>) -> Self {
         Self {
             id,
             _phantom: PhantomData,
         }
+    }
+
+    pub(super) fn id(&self) -> TableId<TransmitHandle> {
+        self.id
     }
 
     /// Attempt to consume this object by converting it into the specified type.
@@ -1507,57 +1567,23 @@ impl<T> StreamReader<T> {
             .set_consumer(self.id, TransmitKind::Stream, consumer);
     }
 
-    /// Convert this `StreamReader` into a [`Val`].
-    // See TODO comment for `StreamAny`; this is prone to handle leakage.
-    pub fn into_val(self) -> Val {
-        Val::Stream(StreamAny(self.id.rep()))
-    }
-
-    /// Attempt to convert the specified [`Val`] to a `StreamReader`.
-    pub fn from_val(mut store: impl AsContextMut<Data: Send>, value: &Val) -> Result<Self> {
-        let Val::Stream(StreamAny(rep)) = value else {
-            bail!("expected `stream`; got `{}`", value.desc());
-        };
-        let store = store.as_context_mut();
-        let id = TableId::<TransmitHandle>::new(*rep);
-        store.0.concurrent_state_mut().get_mut(id)?; // Just make sure it's present
+    /// Transfer ownership of the read end of a stream from a guest to the host.
+    fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
+        let id = lift_index_to_stream(cx, ty, index)?;
         Ok(Self::new_(id))
     }
 
-    /// Transfer ownership of the read end of a stream from a guest to the host.
-    fn lift_from_index(cx: &mut LiftContext<'_>, ty: InterfaceType, index: u32) -> Result<Self> {
-        match ty {
-            InterfaceType::Stream(src) => {
-                let handle_table = cx
-                    .instance_mut()
-                    .table_for_transmit(TransmitIndex::Stream(src));
-                let (rep, is_done) = handle_table.stream_remove_readable(src, index)?;
-                if is_done {
-                    bail!("cannot lift stream after being notified that the writable end dropped");
-                }
-                let id = TableId::<TransmitHandle>::new(rep);
-                cx.concurrent_state_mut().get_mut(id)?.common.handle = None;
-                Ok(Self::new_(id))
-            }
-            _ => func::bad_type_info(),
-        }
-    }
-
-    /// Close this `StreamReader`, writing the default value.
+    /// Close this `StreamReader`.
+    ///
+    /// This will signal that this portion of the stream is closed causing all
+    /// future writes to return immediately with "DROPPED".
     ///
     /// # Panics
     ///
-    /// Panics if the store that the [`Accessor`] is derived from does not own
-    /// this future. Usage of this future after calling `close` will also cause
-    /// a panic.
+    /// Panics if the `store` does not own this future. Usage of this future
+    /// after calling `close` will also cause a panic.
     pub fn close(&mut self, mut store: impl AsContextMut) {
-        // `self` should never be used again, but leave an invalid handle there just in case.
-        let id = mem::replace(&mut self.id, TableId::new(u32::MAX));
-        store
-            .as_context_mut()
-            .0
-            .host_drop_reader(id, TransmitKind::Stream)
-            .unwrap()
+        stream_close(store.as_context_mut().0, &mut self.id);
     }
 
     /// Convenience method around [`Self::close`].
@@ -1576,6 +1602,32 @@ impl<T> StreamReader<T> {
     {
         GuardedStreamReader::new(accessor, self)
     }
+
+    /// Attempts to convert this [`StreamReader<T>`] to a [`StreamAny`].
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if `self` does not belong to
+    /// `store`.
+    pub fn try_into_stream_any(self, store: impl AsContextMut) -> Result<StreamAny>
+    where
+        T: ComponentType + 'static,
+    {
+        StreamAny::try_from_stream_reader(store, self)
+    }
+
+    /// Attempts to convert a [`StreamAny`] into a [`StreamReader<T>`].
+    ///
+    /// # Errors
+    ///
+    /// This function will fail if `T` doesn't match the type of the value that
+    /// `stream` is sending.
+    pub fn try_from_stream_any(stream: StreamAny) -> Result<Self>
+    where
+        T: ComponentType + 'static,
+    {
+        stream.try_into_stream_reader()
+    }
 }
 
 impl<T> fmt::Debug for StreamReader<T> {
@@ -1586,16 +1638,43 @@ impl<T> fmt::Debug for StreamReader<T> {
     }
 }
 
+pub(super) fn stream_close(store: &mut StoreOpaque, id: &mut TableId<TransmitHandle>) {
+    let id = mem::replace(id, TableId::new(u32::MAX));
+    store.host_drop_reader(id, TransmitKind::Stream).unwrap();
+}
+
+/// Transfer ownership of the read end of a stream from a guest to the host.
+pub(super) fn lift_index_to_stream(
+    cx: &mut LiftContext<'_>,
+    ty: InterfaceType,
+    index: u32,
+) -> Result<TableId<TransmitHandle>> {
+    match ty {
+        InterfaceType::Stream(src) => {
+            let handle_table = cx
+                .instance_mut()
+                .table_for_transmit(TransmitIndex::Stream(src));
+            let (rep, is_done) = handle_table.stream_remove_readable(src, index)?;
+            if is_done {
+                bail!("cannot lift stream after being notified that the writable end dropped");
+            }
+            let id = TableId::<TransmitHandle>::new(rep);
+            cx.concurrent_state_mut().get_mut(id)?.common.handle = None;
+            Ok(id)
+        }
+        _ => func::bad_type_info(),
+    }
+}
+
 /// Transfer ownership of the read end of a stream from the host to a guest.
-pub(crate) fn lower_stream_to_index<U>(
-    rep: u32,
+pub(super) fn lower_stream_to_index<U>(
+    id: TableId<TransmitHandle>,
     cx: &mut LowerContext<'_, U>,
     ty: InterfaceType,
 ) -> Result<u32> {
     match ty {
         InterfaceType::Stream(dst) => {
             let concurrent_state = cx.store.0.concurrent_state_mut();
-            let id = TableId::<TransmitHandle>::new(rep);
             let state = concurrent_state.get_mut(id)?.state;
             let rep = concurrent_state.get_mut(state)?.read_handle.rep();
 
@@ -1614,32 +1693,31 @@ pub(crate) fn lower_stream_to_index<U>(
 
 // SAFETY: This relies on the `ComponentType` implementation for `u32` being
 // safe and correct since we lift and lower stream handles as `u32`s.
-unsafe impl<T: Send + Sync> func::ComponentType for StreamReader<T> {
+unsafe impl<T: ComponentType> ComponentType for StreamReader<T> {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
 
     type Lower = <u32 as func::ComponentType>::Lower;
 
-    fn typecheck(ty: &InterfaceType, _types: &InstanceType<'_>) -> Result<()> {
+    fn typecheck(ty: &InterfaceType, types: &InstanceType<'_>) -> Result<()> {
         match ty {
-            InterfaceType::Stream(_) => Ok(()),
+            InterfaceType::Stream(ty) => {
+                let ty = types.types[*ty].ty;
+                types::typecheck_payload::<T>(types.types[ty].payload.as_ref(), types)
+            }
             other => bail!("expected `stream`, found `{}`", func::desc(other)),
         }
     }
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T: Send + Sync> func::Lower for StreamReader<T> {
+unsafe impl<T: ComponentType> func::Lower for StreamReader<T> {
     fn linear_lower_to_flat<U>(
         &self,
         cx: &mut LowerContext<'_, U>,
         ty: InterfaceType,
         dst: &mut MaybeUninit<Self::Lower>,
     ) -> Result<()> {
-        lower_stream_to_index(self.id.rep(), cx, ty)?.linear_lower_to_flat(
-            cx,
-            InterfaceType::U32,
-            dst,
-        )
+        lower_stream_to_index(self.id, cx, ty)?.linear_lower_to_flat(cx, InterfaceType::U32, dst)
     }
 
     fn linear_lower_to_memory<U>(
@@ -1648,7 +1726,7 @@ unsafe impl<T: Send + Sync> func::Lower for StreamReader<T> {
         ty: InterfaceType,
         offset: usize,
     ) -> Result<()> {
-        lower_stream_to_index(self.id.rep(), cx, ty)?.linear_lower_to_memory(
+        lower_stream_to_index(self.id, cx, ty)?.linear_lower_to_memory(
             cx,
             InterfaceType::U32,
             offset,
@@ -1657,7 +1735,7 @@ unsafe impl<T: Send + Sync> func::Lower for StreamReader<T> {
 }
 
 // SAFETY: See the comment on the `ComponentType` `impl` for this type.
-unsafe impl<T: Send + Sync> func::Lift for StreamReader<T> {
+unsafe impl<T: ComponentType> func::Lift for StreamReader<T> {
     fn linear_lift_from_flat(
         cx: &mut LiftContext<'_>,
         ty: InterfaceType,
@@ -1883,16 +1961,27 @@ struct TransmitState {
     read: ReadState,
     /// Whether futher values may be transmitted via this stream or future.
     done: bool,
+    /// The original creator of this stream, used for type-checking with
+    /// `{Future,Stream}Any`.
+    pub(super) origin: TransmitOrigin,
 }
 
-impl Default for TransmitState {
-    fn default() -> Self {
+#[derive(Copy, Clone)]
+pub(super) enum TransmitOrigin {
+    Host,
+    GuestFuture(ComponentInstanceId, TypeFutureTableIndex),
+    GuestStream(ComponentInstanceId, TypeStreamTableIndex),
+}
+
+impl TransmitState {
+    fn new(origin: TransmitOrigin) -> Self {
         Self {
             write_handle: TableId::new(u32::MAX),
             read_handle: TableId::new(u32::MAX),
             read: ReadState::Open,
             write: WriteState::Open,
             done: false,
+            origin,
         }
     }
 }
@@ -1900,6 +1989,15 @@ impl Default for TransmitState {
 impl TableDebug for TransmitState {
     fn type_name() -> &'static str {
         "TransmitState"
+    }
+}
+
+impl TransmitOrigin {
+    fn guest(id: ComponentInstanceId, index: TransmitIndex) -> Self {
+        match index {
+            TransmitIndex::Future(ty) => TransmitOrigin::GuestFuture(id, ty),
+            TransmitIndex::Stream(ty) => TransmitOrigin::GuestStream(id, ty),
+        }
     }
 }
 
@@ -2265,6 +2363,15 @@ impl StoreOpaque {
         }
         Ok(())
     }
+
+    pub(super) fn transmit_origin(
+        &mut self,
+        id: TableId<TransmitHandle>,
+    ) -> Result<TransmitOrigin> {
+        let state = self.concurrent_state_mut();
+        let state_id = state.get_mut(id)?.state;
+        Ok(state.get_mut(state_id)?.origin)
+    }
 }
 
 impl<T> StoreContextMut<'_, T> {
@@ -2278,7 +2385,7 @@ impl<T> StoreContextMut<'_, T> {
     {
         let token = StoreToken::new(self.as_context_mut());
         let state = self.0.concurrent_state_mut();
-        let (_, read) = state.new_transmit().unwrap();
+        let (_, read) = state.new_transmit(TransmitOrigin::Host).unwrap();
         let producer = Arc::new(Mutex::new(Some((Box::pin(producer), P::Buffer::default()))));
         let id = state.get_mut(read).unwrap().state;
         let mut dropped = false;
@@ -2347,7 +2454,7 @@ impl<T> StoreContextMut<'_, T> {
                                             || *guest_offset > 0
                                             || host_offset > 0
                                         {
-                                            return Poll::Ready(Err(anyhow!(
+                                            return Poll::Ready(Err(format_err!(
                                                 "StreamProducer::poll_produce returned Poll::Pending \
                                                  after producing at least one item"
                                             )));
@@ -2412,7 +2519,7 @@ impl<T> StoreContextMut<'_, T> {
                     *producer.lock().unwrap() = Some((mine, buffer));
 
                     if write_buffer {
-                        write( token, id, producer.clone(), kind).await?;
+                        write(token, id, producer.clone(), kind).await?;
                     }
 
                     Ok(if dropped {
@@ -2611,7 +2718,7 @@ impl<T> StoreContextMut<'_, T> {
                 let future = async move {
                     loop {
                         if tls::get(|store| {
-                            anyhow::Ok(matches!(
+                            crate::error::Ok(matches!(
                                 store.concurrent_state_mut().get_mut(id)?.read,
                                 ReadState::Dropped
                             ))
@@ -2659,7 +2766,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
             None
         };
 
-        anyhow::Ok((
+        crate::error::Ok((
             mem::replace(&mut transmit.read, ReadState::Open),
             guest_offset,
         ))
@@ -2681,7 +2788,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
             if let TransmitKind::Future = kind {
                 tls::get(|store| {
                     store.concurrent_state_mut().get_mut(id)?.done = true;
-                    anyhow::Ok(())
+                    crate::error::Ok(())
                 })?;
             }
 
@@ -2698,7 +2805,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
                         count - guest_offset,
                         &mut pair.lock().unwrap().as_mut().unwrap().1,
                     )?;
-                    anyhow::Ok(())
+                    crate::error::Ok(())
                 }
             };
 
@@ -2752,7 +2859,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
                     caller,
                 };
 
-                anyhow::Ok(())
+                crate::error::Ok(())
             })?;
 
             Ok(())
@@ -2792,7 +2899,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
                     },
                 };
 
-                anyhow::Ok(())
+                crate::error::Ok(())
             })?;
             Ok(())
         }
@@ -2906,7 +3013,7 @@ impl Instance {
             TransmitIndex::Future(_) => store.host_drop_writer(
                 id,
                 Some(|| {
-                    Err(anyhow!(
+                    Err(format_err!(
                         "cannot drop future write end without first writing a value"
                     ))
                 }),
@@ -2938,9 +3045,9 @@ impl Instance {
 
                 let payload = types[types[write_ty].ty].payload;
 
-                if write_caller == read_caller && payload.is_some() {
+                if write_caller == read_caller && !allow_intra_component_read_write(payload) {
                     bail!(
-                        "cannot read from and write to intra-component future with non-unit payload"
+                        "cannot read from and write to intra-component future with non-numeric payload"
                     )
                 }
 
@@ -2960,7 +3067,7 @@ impl Instance {
                             .get(write_address..)
                             .and_then(|b| b.get(..usize::try_from(abi.size32).unwrap()))
                             .ok_or_else(|| {
-                                anyhow::anyhow!("write pointer out of bounds of memory")
+                                crate::format_err!("write pointer out of bounds of memory")
                             })?;
 
                         Val::load(lift, ty, bytes)
@@ -2980,13 +3087,15 @@ impl Instance {
                 }
             }
             (TransmitIndex::Stream(write_ty), TransmitIndex::Stream(read_ty)) => {
-                if let Some(flat_abi) = flat_abi {
-                    if write_caller == read_caller && types[types[write_ty].ty].payload.is_some() {
-                        bail!(
-                            "cannot read from and write to intra-component stream with non-unit payload"
-                        )
-                    }
+                if write_caller == read_caller
+                    && !allow_intra_component_read_write(types[types[write_ty].ty].payload)
+                {
+                    bail!(
+                        "cannot read from and write to intra-component stream with non-numeric payload"
+                    )
+                }
 
+                if let Some(flat_abi) = flat_abi {
                     // Fast path memcpy for "flat" (i.e. no pointers or handles) payloads:
                     let length_in_bytes = usize::try_from(flat_abi.size).unwrap() * count;
                     if length_in_bytes > 0 {
@@ -3005,7 +3114,7 @@ impl Instance {
                                 .get(write_address..)
                                 .and_then(|b| b.get(..length_in_bytes))
                                 .ok_or_else(|| {
-                                    anyhow::anyhow!("write pointer out of bounds of memory")
+                                    crate::format_err!("write pointer out of bounds of memory")
                                 })?
                                 .as_ptr();
                             let dst = self
@@ -3013,12 +3122,25 @@ impl Instance {
                                 .get_mut(read_address..)
                                 .and_then(|b| b.get_mut(..length_in_bytes))
                                 .ok_or_else(|| {
-                                    anyhow::anyhow!("read pointer out of bounds of memory")
+                                    crate::format_err!("read pointer out of bounds of memory")
                                 })?
                                 .as_mut_ptr();
                             // SAFETY: Both `src` and `dst` have been validated
                             // above.
-                            unsafe { src.copy_to(dst, length_in_bytes) };
+                            unsafe {
+                                if write_caller == read_caller {
+                                    // If the same instance owns both ends of
+                                    // the stream, the source and destination
+                                    // buffers might overlap.
+                                    src.copy_to(dst, length_in_bytes)
+                                } else {
+                                    // Since the read and write ends of the
+                                    // stream are owned by distinct instances,
+                                    // the buffers cannot possibly belong to the
+                                    // same memory and thus cannot overlap.
+                                    src.copy_to_nonoverlapping(dst, length_in_bytes)
+                                }
+                            }
                         }
                     }
                 } else {
@@ -3034,7 +3156,9 @@ impl Instance {
                         .memory()
                         .get(write_address..)
                         .and_then(|b| b.get(..size * count))
-                        .ok_or_else(|| anyhow::anyhow!("write pointer out of bounds of memory"))?;
+                        .ok_or_else(|| {
+                            crate::format_err!("write pointer out of bounds of memory")
+                        })?;
 
                     let values = (0..count)
                         .map(|index| Val::load(lift, ty, &bytes[(index * size)..][..size]))
@@ -3054,7 +3178,9 @@ impl Instance {
                         .as_slice_mut()
                         .get_mut(read_address..)
                         .and_then(|b| b.get_mut(..size * count))
-                        .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))?;
+                        .ok_or_else(|| {
+                            crate::format_err!("read pointer out of bounds of memory")
+                        })?;
                     let mut ptr = read_address;
                     for value in values {
                         value.store(lower, ty, ptr)?;
@@ -3095,7 +3221,7 @@ impl Instance {
                 .get(address..)
                 .and_then(|b| b.get(..(size * count)))
                 .map(drop)
-                .ok_or_else(|| anyhow::anyhow!("read pointer out of bounds of memory"))
+                .ok_or_else(|| crate::format_err!("read pointer out of bounds of memory"))
         } else {
             Ok(())
         }
@@ -3113,6 +3239,13 @@ impl Instance {
         address: u32,
         count: u32,
     ) -> Result<ReturnCode> {
+        if !self.options(store.0, options).async_ {
+            // The caller may only sync call `{stream,future}.write` from an
+            // async task (i.e. a task created via a call to an async export).
+            // Otherwise, we'll trap.
+            store.0.check_blocking()?;
+        }
+
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
         self.check_bounds(store.0, options, ty, address, count)?;
@@ -3341,6 +3474,13 @@ impl Instance {
         address: u32,
         count: u32,
     ) -> Result<ReturnCode> {
+        if !self.options(store.0, options).async_ {
+            // The caller may only sync call `{stream,future}.read` from an
+            // async task (i.e. a task created via a call to an async export).
+            // Otherwise, we'll trap.
+            store.0.check_blocking()?;
+        }
+
         let address = usize::try_from(address).unwrap();
         let count = usize::try_from(count).unwrap();
         self.check_bounds(store.0, options, ty, address, count)?;
@@ -3720,6 +3860,13 @@ impl Instance {
         async_: bool,
         writer: u32,
     ) -> Result<ReturnCode> {
+        if !async_ {
+            // The caller may only sync call `{stream,future}.cancel-write` from
+            // an async task (i.e. a task created via a call to an async
+            // export).  Otherwise, we'll trap.
+            store.check_blocking()?;
+        }
+
         let (rep, state) =
             get_mut_by_index_from(self.id().get_mut(store).table_for_transmit(ty), ty, writer)?;
         let id = TableId::<TransmitHandle>::new(rep);
@@ -3754,6 +3901,13 @@ impl Instance {
         async_: bool,
         reader: u32,
     ) -> Result<ReturnCode> {
+        if !async_ {
+            // The caller may only sync call `{stream,future}.cancel-read` from
+            // an async task (i.e. a task created via a call to an async
+            // export).  Otherwise, we'll trap.
+            store.check_blocking()?;
+        }
+
         let (rep, state) =
             get_mut_by_index_from(self.id().get_mut(store).table_for_transmit(ty), ty, reader)?;
         let id = TableId::<TransmitHandle>::new(rep);
@@ -3876,7 +4030,7 @@ impl Instance {
             .get(debug_msg_address..)
             .and_then(|b| b.get(..debug_msg.bytes().len()))
             .map(|_| debug_msg_address)
-            .ok_or_else(|| anyhow::anyhow!("invalid debug message pointer: out of bounds"))?;
+            .ok_or_else(|| crate::format_err!("invalid debug message pointer: out of bounds"))?;
         debug_msg
             .as_str()
             .linear_lower_to_memory(lower_cx, InterfaceType::String, offset)?;
@@ -3968,7 +4122,9 @@ impl Instance {
     /// write ends to the (sub-)component instance to which the specified
     /// `TransmitIndex` belongs.
     fn guest_new(self, store: &mut StoreOpaque, ty: TransmitIndex) -> Result<ResourcePair> {
-        let (write, read) = store.concurrent_state_mut().new_transmit()?;
+        let (write, read) = store
+            .concurrent_state_mut()
+            .new_transmit(TransmitOrigin::guest(self.id().instance(), ty))?;
 
         let table = self.id().get_mut(store).table_for_transmit(ty);
         let (read_handle, write_handle) = match ty {
@@ -4151,21 +4307,21 @@ impl Instance {
 
 impl ComponentInstance {
     fn table_for_transmit(self: Pin<&mut Self>, ty: TransmitIndex) -> &mut HandleTable {
-        let (tables, types) = self.guest_tables();
+        let (states, types) = self.instance_states();
         let runtime_instance = match ty {
             TransmitIndex::Stream(ty) => types[ty].instance,
             TransmitIndex::Future(ty) => types[ty].instance,
         };
-        &mut tables[runtime_instance]
+        states[runtime_instance].handle_table()
     }
 
     fn table_for_error_context(
         self: Pin<&mut Self>,
         ty: TypeComponentLocalErrorContextTableIndex,
     ) -> &mut HandleTable {
-        let (tables, types) = self.guest_tables();
+        let (states, types) = self.instance_states();
         let runtime_instance = types[ty].instance;
-        &mut tables[runtime_instance]
+        states[runtime_instance].handle_table()
     }
 
     fn get_mut_by_index(
@@ -4292,8 +4448,11 @@ impl ConcurrentState {
 
     /// Allocate a new future or stream, including the `TransmitState` and the
     /// `TransmitHandle`s corresponding to the read and write ends.
-    fn new_transmit(&mut self) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
-        let state_id = self.push(TransmitState::default())?;
+    fn new_transmit(
+        &mut self,
+        origin: TransmitOrigin,
+    ) -> Result<(TableId<TransmitHandle>, TableId<TransmitHandle>)> {
+        let state_id = self.push(TransmitState::new(origin))?;
 
         let write = self.push(TransmitHandle::new(state_id))?;
         let read = self.push(TransmitHandle::new(state_id))?;
@@ -4343,7 +4502,8 @@ impl Waitable {
             } => {
                 let instance = instance.id().get_mut(store);
                 let runtime_instance = instance.component().types()[ty].instance;
-                let (rep, state) = instance.guest_tables().0[runtime_instance]
+                let (rep, state) = instance.instance_states().0[runtime_instance]
+                    .handle_table()
                     .future_rep(ty, handle)
                     .unwrap();
                 assert_eq!(rep, self.rep());
@@ -4364,7 +4524,8 @@ impl Waitable {
             } => {
                 let instance = instance.id().get_mut(store);
                 let runtime_instance = instance.component().types()[ty].instance;
-                let (rep, state) = instance.guest_tables().0[runtime_instance]
+                let (rep, state) = instance.instance_states().0[runtime_instance]
+                    .handle_table()
                     .stream_rep(ty, handle)
                     .unwrap();
                 assert_eq!(rep, self.rep());
@@ -4394,6 +4555,27 @@ impl Waitable {
     }
 }
 
+/// Determine whether an intra-component read/write is allowed for the specified
+/// `stream` or `future` payload type according to the component model
+/// specification.
+fn allow_intra_component_read_write(ty: Option<InterfaceType>) -> bool {
+    matches!(
+        ty,
+        None | Some(
+            InterfaceType::S8
+                | InterfaceType::U8
+                | InterfaceType::S16
+                | InterfaceType::U16
+                | InterfaceType::S32
+                | InterfaceType::U32
+                | InterfaceType::S64
+                | InterfaceType::U64
+                | InterfaceType::Float32
+                | InterfaceType::Float64
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4417,13 +4599,13 @@ mod tests {
 
     #[test]
     fn future_producer() {
-        let mut fut = pin!(async { anyhow::Ok(()) });
+        let mut fut = pin!(async { crate::error::Ok(()) });
         assert!(matches!(
             poll_future_producer(fut.as_mut(), false),
             Poll::Ready(Ok(Some(()))),
         ));
 
-        let mut fut = pin!(async { anyhow::Ok(()) });
+        let mut fut = pin!(async { crate::error::Ok(()) });
         assert!(matches!(
             poll_future_producer(fut.as_mut(), true),
             Poll::Ready(Ok(Some(()))),

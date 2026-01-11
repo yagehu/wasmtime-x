@@ -33,7 +33,7 @@ use wasmtime_environ::{
 /// [`Linker::instantiate`](crate::Linker::instantiate) or similar
 /// [`Linker`](crate::Linker) methods, but a more low-level constructor is also
 /// available as [`Instance::new`].
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Instance {
     id: StoreInstanceId,
@@ -525,7 +525,7 @@ impl Instance {
         let f = self
             .get_export(store.as_context_mut(), name)
             .and_then(|f| f.into_func())
-            .ok_or_else(|| anyhow!("failed to find function export `{name}`"))?;
+            .ok_or_else(|| format_err!("failed to find function export `{name}`"))?;
         Ok(f.typed::<Params, Results>(store)
             .with_context(|| format!("failed to convert function `{name}` to given type"))?)
     }

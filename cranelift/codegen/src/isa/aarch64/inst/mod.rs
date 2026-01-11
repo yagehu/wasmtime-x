@@ -9,11 +9,11 @@ use crate::{CodegenError, CodegenResult, settings};
 
 use crate::machinst::{PrettyPrint, Reg, RegClass, Writable};
 
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt::Write;
 use core::slice;
 use smallvec::{SmallVec, smallvec};
-use std::fmt::Write;
-use std::string::{String, ToString};
 
 pub(crate) mod regs;
 pub(crate) use self::regs::*;
@@ -801,7 +801,7 @@ fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
         }
         Inst::Ret { .. } | Inst::AuthenticatedRet { .. } => {}
         Inst::Jump { .. } => {}
-        Inst::Call { info, .. } | Inst::PatchableCall { info, .. } => {
+        Inst::Call { info, .. } => {
             let CallInfo { uses, defs, .. } = &mut **info;
             for CallArgPair { vreg, preg } in uses {
                 collector.reg_fixed_use(vreg, *preg);
@@ -1008,7 +1008,6 @@ impl MachInst for Inst {
         match self {
             Inst::Call { .. }
             | Inst::CallInd { .. }
-            | Inst::PatchableCall { .. }
             | Inst::ElfTlsGetAddr { .. }
             | Inst::MachOTlsGetAddr { .. } => CallType::Regular,
 
@@ -1093,7 +1092,7 @@ impl MachInst for Inst {
 
     fn is_safepoint(&self) -> bool {
         match self {
-            Inst::Call { .. } | Inst::CallInd { .. } | Inst::PatchableCall { .. } => true,
+            Inst::Call { .. } | Inst::CallInd { .. } => true,
             _ => false,
         }
     }
@@ -1111,8 +1110,8 @@ impl MachInst for Inst {
         Inst::Nop4
     }
 
-    fn gen_nop_unit() -> SmallVec<[u8; 8]> {
-        smallvec![0x1f, 0x20, 0x03, 0xd5]
+    fn gen_nop_units() -> Vec<Vec<u8>> {
+        vec![vec![0x1f, 0x20, 0x03, 0xd5]]
     }
 
     fn rc_for_type(ty: Type) -> CodegenResult<(&'static [RegClass], &'static [Type])> {
@@ -2599,9 +2598,6 @@ impl Inst {
                     .unwrap_or_default();
                 format!("blr {rn}{try_call}")
             }
-            &Inst::PatchableCall { .. } => {
-                format!("bl 0 ; patchable")
-            }
             &Inst::ReturnCall { ref info } => {
                 let mut s = format!(
                     "return_call {:?} new_stack_arg_size:{}",
@@ -3113,6 +3109,6 @@ mod tests {
         } else {
             32
         };
-        assert_eq!(expected, std::mem::size_of::<Inst>());
+        assert_eq!(expected, core::mem::size_of::<Inst>());
     }
 }

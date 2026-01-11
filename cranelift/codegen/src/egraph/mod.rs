@@ -1,5 +1,6 @@
 //! Support for egraphs represented in the DataFlowGraph.
 
+use crate::FxHashSet;
 use crate::alias_analysis::{AliasAnalysis, LastStores};
 use crate::ctxhash::{CtxEq, CtxHash, NullCtx};
 use crate::cursor::{Cursor, CursorPosition, FuncCursor};
@@ -24,7 +25,6 @@ use core::hash::Hasher;
 use cranelift_control::ControlPlane;
 use cranelift_entity::SecondaryMap;
 use cranelift_entity::packed_option::ReservedValue;
-use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 mod cost;
@@ -660,7 +660,7 @@ where
 
                 let old_vals = ctx.func.dfg.inst_results(inst);
                 let new_vals = if let Some(val) = new_val.as_ref() {
-                    std::slice::from_ref(val)
+                    core::slice::from_ref(val)
                 } else {
                     ctx.func.dfg.inst_results(new_inst)
                 };
@@ -1075,7 +1075,7 @@ impl<'a> CtxEq<(Type, InstructionData), (Type, InstructionData)> for GVNContext<
 
 impl<'a> CtxHash<(Type, InstructionData)> for GVNContext<'a> {
     fn ctx_hash<H: Hasher>(&self, state: &mut H, (ty, inst): &(Type, InstructionData)) {
-        std::hash::Hash::hash(&ty, state);
+        core::hash::Hash::hash(&ty, state);
         inst.hash(state, self.value_lists);
     }
 }
@@ -1108,6 +1108,5 @@ pub(crate) struct Stats {
     pub(crate) elaborate_func: u64,
     pub(crate) elaborate_func_pre_insts: u64,
     pub(crate) elaborate_func_post_insts: u64,
-    pub(crate) elaborate_best_cost_fixpoint_iters: u64,
     pub(crate) eclass_size_limit: u64,
 }

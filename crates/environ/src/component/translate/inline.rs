@@ -699,15 +699,6 @@ impl<'a> Inliner<'a> {
                 ));
                 frame.funcs.push((*ty, dfg::CoreDef::Trampoline(index)));
             }
-            BackpressureSet { func } => {
-                let index = self.result.trampolines.push((
-                    *func,
-                    dfg::Trampoline::BackpressureSet {
-                        instance: frame.instance,
-                    },
-                ));
-                frame.funcs.push((*func, dfg::CoreDef::Trampoline(index)));
-            }
             BackpressureInc { func } => {
                 let index = self.result.trampolines.push((
                     *func,
@@ -1603,7 +1594,7 @@ impl<'a> Inliner<'a> {
         }
     }
 
-    /// Translatees an `AdapterOptions` into a `CanonicalOptions` where
+    /// Translates an `AdapterOptions` into a `CanonicalOptions` where
     /// memories/functions are inserted into the global initializer list for
     /// use at runtime. This is only used for lowered host functions and lifted
     /// functions exported to the host.

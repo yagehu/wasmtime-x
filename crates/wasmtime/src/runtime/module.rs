@@ -73,7 +73,7 @@ pub use registry::*;
 ///
 /// ```no_run
 /// # use wasmtime::*;
-/// # fn main() -> anyhow::Result<()> {
+/// # fn main() -> Result<()> {
 /// let engine = Engine::default();
 /// let module = Module::from_file(&engine, "path/to/foo.wasm")?;
 /// # Ok(())
@@ -84,7 +84,7 @@ pub use registry::*;
 ///
 /// ```no_run
 /// # use wasmtime::*;
-/// # fn main() -> anyhow::Result<()> {
+/// # fn main() -> Result<()> {
 /// let engine = Engine::default();
 /// // Now we're using the WebAssembly text extension: `.wat`!
 /// let module = Module::from_file(&engine, "path/to/foo.wat")?;
@@ -97,7 +97,7 @@ pub use registry::*;
 ///
 /// ```no_run
 /// # use wasmtime::*;
-/// # fn main() -> anyhow::Result<()> {
+/// # fn main() -> Result<()> {
 /// let engine = Engine::default();
 /// # let wasm_bytes: Vec<u8> = Vec::new();
 /// let module = Module::new(&engine, &wasm_bytes)?;
@@ -112,7 +112,7 @@ pub use registry::*;
 ///
 /// ```no_run
 /// # use wasmtime::*;
-/// # fn main() -> anyhow::Result<()> {
+/// # fn main() -> Result<()> {
 /// let engine = Engine::default();
 /// # let wasm_bytes: Vec<u8> = Vec::new();
 /// let module = Module::new(&engine, &wasm_bytes)?;
@@ -225,7 +225,7 @@ impl Module {
     ///
     /// ```no_run
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// # let wasm_bytes: Vec<u8> = Vec::new();
     /// let module = Module::new(&engine, &wasm_bytes)?;
@@ -238,7 +238,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::new(&engine, "(module (func))")?;
     /// # Ok(())
@@ -262,7 +262,7 @@ impl Module {
     ///
     /// ```no_run
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// let engine = Engine::default();
     /// let module = Module::from_file(&engine, "./path/to/foo.wasm")?;
     /// # Ok(())
@@ -273,7 +273,7 @@ impl Module {
     ///
     /// ```no_run
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::from_file(&engine, "./path/to/foo.wat")?;
     /// # Ok(())
@@ -299,7 +299,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let wasm = b"\0asm\x01\0\0\0";
     /// let module = Module::from_binary(&engine, wasm)?;
@@ -311,7 +311,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// assert!(Module::from_binary(&engine, b"(module)").is_err());
     /// # Ok(())
@@ -666,7 +666,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::new(&engine, "(module $foo)")?;
     /// assert_eq!(module.name(), Some("foo"));
@@ -699,7 +699,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::new(&engine, "(module)")?;
     /// assert_eq!(module.imports().len(), 0);
@@ -711,7 +711,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let wat = r#"
     ///     (module
@@ -760,7 +760,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::new(&engine, "(module)")?;
     /// assert!(module.exports().next().is_none());
@@ -772,7 +772,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let wat = r#"
     ///     (module
@@ -821,7 +821,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let module = Module::new(&engine, "(module)")?;
     /// assert!(module.get_export("foo").is_none());
@@ -833,7 +833,7 @@ impl Module {
     ///
     /// ```
     /// # use wasmtime::*;
-    /// # fn main() -> anyhow::Result<()> {
+    /// # fn main() -> Result<()> {
     /// # let engine = Engine::default();
     /// let wat = r#"
     ///     (module
@@ -972,10 +972,7 @@ impl Module {
     /// Note that depending on the engine configuration, this image
     /// range may not actually be the code that is directly executed.
     pub fn image_range(&self) -> Range<*const u8> {
-        let range = self.engine_code().text_range();
-        let start = range.start.raw() as *const u8;
-        let end = range.end.raw() as *const u8;
-        start..end
+        self.engine_code().image().as_ptr_range()
     }
 
     /// Force initialization of copy-on-write images to happen here-and-now
@@ -1149,8 +1146,28 @@ impl Module {
         if data.is_empty() {
             None
         } else {
-            Some(FrameTable::parse(data).expect("Frame tables were validated on module load"))
+            let orig_text = self.inner.code.text();
+            Some(
+                FrameTable::parse(data, orig_text)
+                    .expect("Frame tables were validated on module load"),
+            )
         }
+    }
+
+    /// Is this `Module` the same as another?
+    ///
+    /// Ordinarily, module identity does not matter: a Wasmtime user
+    /// will create or obtain a module from some source and
+    /// instantiate it, and any two `Module` objects created from the
+    /// same source module are interchangeable. However, introspecting
+    /// module identity may be useful when examining Wasm VM state,
+    /// e.g. via debug APIs. It is guaranteed that `Module::same`
+    /// returns true for `Module` objects that reference the same
+    /// underlying module (e.g., one created via a `clone` of the
+    /// other).
+    #[inline]
+    pub fn same(a: &Module, b: &Module) -> bool {
+        Arc::ptr_eq(&a.inner, &b.inner)
     }
 }
 
@@ -1218,7 +1235,7 @@ impl crate::vm::ModuleMemoryImageSource for CodeMemory {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Engine, Module};
+    use crate::{CodeBuilder, Engine, Module};
     use wasmtime_environ::MemoryInitialization;
 
     #[test]
@@ -1237,5 +1254,27 @@ mod tests {
 
         let init = &module.env_module().memory_initialization;
         assert!(matches!(init, MemoryInitialization::Static { .. }));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn image_range_is_whole_image() {
+        let wat = r#"
+                (module
+                    (memory 1)
+                    (data (i32.const 0) "1234")
+                    (func (export "f") (param i32) (result i32)
+                        local.get 0))
+            "#;
+        let engine = Engine::default();
+        let mut builder = CodeBuilder::new(&engine);
+        builder.wasm_binary_or_text(wat.as_bytes(), None).unwrap();
+        let bytes = builder.compile_module_serialized().unwrap();
+
+        let module = unsafe { Module::deserialize(&engine, &bytes).unwrap() };
+        let image_range = module.image_range();
+        let len = image_range.end.addr() - image_range.start.addr();
+        // Length may be strictly greater if it becomes page-aligned.
+        assert!(len >= bytes.len());
     }
 }

@@ -32,7 +32,7 @@ use wasmtime_unwinder::Handler;
 
 pub use self::backtrace::Backtrace;
 #[cfg(feature = "debug")]
-pub(crate) use self::backtrace::CurrentActivationBacktrace;
+pub(crate) use self::backtrace::{FrameOrHostCode, StoreBacktrace};
 #[cfg(feature = "gc")]
 pub use wasmtime_unwinder::Frame;
 
@@ -181,6 +181,7 @@ macro_rules! host_result_no_catch {
         $(
             impl HostResult for $t {
                 type Abi = $t;
+                #[allow(unreachable_code, reason = "some types uninhabited on some platforms")]
                 fn maybe_catch_unwind(
                     store: &mut dyn VMStore,
                     f: impl FnOnce(&mut dyn VMStore) -> $t,

@@ -11,6 +11,7 @@
 //! panicking.
 
 pub mod component_api;
+pub mod component_async;
 #[cfg(feature = "fuzz-spec-interpreter")]
 pub mod diff_spec;
 pub mod diff_wasmi;
@@ -22,10 +23,10 @@ mod stacks;
 
 use self::diff_wasmtime::WasmtimeInstance;
 use self::engine::{DiffEngine, DiffInstance};
-use crate::block_on;
 use crate::generators::GcOps;
 use crate::generators::{self, CompilerStrategy, DiffValue, DiffValueType};
 use crate::single_module_fuzzer::KnownValid;
+use crate::{YieldN, block_on};
 use arbitrary::Arbitrary;
 pub use stacks::check_stacks;
 use std::future::Future;
@@ -320,7 +321,7 @@ fn compile_module(
 ) -> Option<Module> {
     log_wasm(bytes);
 
-    fn is_pcc_error(e: &anyhow::Error) -> bool {
+    fn is_pcc_error(e: &wasmtime::Error) -> bool {
         // NOTE: please keep this predicate in sync with the display format of CodegenError,
         // defined in `wasmtime/cranelift/codegen/src/result.rs`
         e.to_string().to_lowercase().contains("proof-carrying-code")
@@ -399,7 +400,7 @@ pub fn instantiate_with_dummy(store: &mut Store<StoreLimits>, module: &Module) -
 
 fn unwrap_instance(
     store: &Store<StoreLimits>,
-    instance: anyhow::Result<Instance>,
+    instance: wasmtime::Result<Instance>,
 ) -> Option<Instance> {
     let e = match instance {
         Ok(i) => return Some(i),
@@ -459,7 +460,7 @@ pub fn differential(
     name: &str,
     args: &[DiffValue],
     result_tys: &[DiffValueType],
-) -> anyhow::Result<bool> {
+) -> wasmtime::Result<bool> {
     log::debug!("Evaluating: `{name}` with {args:?}");
     let lhs_results = match lhs.evaluate(name, args, result_tys) {
         Ok(Some(results)) => Ok(results),
@@ -1206,23 +1207,6 @@ pub fn call_async(wasm: &[u8], config: &generators::Config, mut poll_amts: &[u32
         }
     }
 
-    /// Helper future to yield N times before resolving.
-    struct YieldN(u32);
-
-    impl Future for YieldN {
-        type Output = ();
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.0 == 0 {
-                Poll::Ready(())
-            } else {
-                self.0 -= 1;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        }
-    }
-
     /// Helper future for applying a timeout to `future` up to either when `end`
     /// is the current time or `polls` polls happen.
     ///
@@ -1340,7 +1324,7 @@ mod tests {
                 let ok =
                     Validator::new_with_features(WasmFeatures::all() ^ feature).validate_all(&wasm);
                 if ok.is_err() {
-                    anyhow::bail!("generated a module with {feature:?} but that wasn't expected");
+                    wasmtime::bail!("generated a module with {feature:?} but that wasn't expected");
                 }
             }
 

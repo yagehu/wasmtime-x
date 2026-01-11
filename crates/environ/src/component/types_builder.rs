@@ -1,10 +1,10 @@
 use crate::component::*;
+use crate::error::{Result, bail};
 use crate::prelude::*;
 use crate::{
     EngineOrModuleTypeIndex, EntityType, ModuleInternedTypeIndex, ModuleTypes, ModuleTypesBuilder,
     PrimaryMap, TypeConvert, WasmHeapType, WasmValType,
 };
-use anyhow::{Result, bail};
 use cranelift_entity::EntityRef;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -458,6 +458,9 @@ impl ComponentTypesBuilder {
             }
             ComponentDefinedType::FixedSizeList(..) => {
                 bail!("support not implemented for fixed-size-lists");
+            }
+            ComponentDefinedType::Map(..) => {
+                bail!("support not implemented for map type");
             }
         };
         let info = self.type_information(&ret);

@@ -105,7 +105,7 @@ fn _define_func(
                     ctx: #ctx_type (impl #(#bounds)+*),
                     memory: &mut wiggle::GuestMemory<'_>,
                     #(#abi_params),*
-                ) -> wiggle::anyhow::Result<#abi_ret> {
+                ) -> wiggle::error::Result<#abi_ret> {
                     use std::convert::TryFrom as _;
                     #traced_body
                 }
@@ -133,7 +133,7 @@ fn _define_func(
                     ctx: #ctx_type (impl #(#bounds)+*),
                     memory: &mut wiggle::GuestMemory<'_>,
                     #(#abi_params),*
-                ) -> wiggle::anyhow::Result<#abi_ret> {
+                ) -> wiggle::error::Result<#abi_ret> {
                     use std::convert::TryFrom as _;
                     #traced_body
                 }

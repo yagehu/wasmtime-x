@@ -25,13 +25,12 @@ use crate::component::{
 };
 use crate::fact::signature::Signature;
 use crate::fact::transcode::Transcoder;
-use crate::fact::traps::Trap;
 use crate::fact::{
     AdapterData, Body, Function, FunctionId, Helper, HelperLocation, HelperType,
     LinearMemoryOptions, Module, Options,
 };
 use crate::prelude::*;
-use crate::{FuncIndex, GlobalIndex};
+use crate::{FuncIndex, GlobalIndex, Trap};
 use std::collections::HashMap;
 use std::mem;
 use std::ops::Range;
@@ -60,11 +59,6 @@ struct Compiler<'a, 'b> {
 
     /// Locals partitioned by type which are not currently in use.
     free_locals: HashMap<ValType, Vec<u32>>,
-
-    /// Metadata about all `unreachable` trap instructions in this function and
-    /// what the trap represents. The offset within `self.code` is recorded as
-    /// well.
-    traps: Vec<(usize, Trap)>,
 
     /// A heuristic which is intended to limit the size of a generated function
     /// to a certain maximum to avoid generating arbitrarily large functions.
@@ -331,7 +325,6 @@ pub(super) fn compile_helper(module: &mut Module<'_>, result: FunctionId, helper
         code: Vec::new(),
         nlocals,
         free_locals: HashMap::new(),
-        traps: Vec::new(),
         result,
         fuel: INITIAL_FUEL,
         // This is a helper function and only the top-level function is
@@ -445,7 +438,6 @@ impl<'a, 'b> Compiler<'a, 'b> {
             code: Vec::new(),
             nlocals,
             free_locals: HashMap::new(),
-            traps: Vec::new(),
             fuel: INITIAL_FUEL,
             emit_resource_call,
         }
@@ -544,6 +536,11 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I32Const(
             i32::try_from(self.types[adapter.lift.ty].results.as_u32()).unwrap(),
         ));
+        self.instruction(I32Const(if self.types[adapter.lift.ty].async_ {
+            1
+        } else {
+            0
+        }));
         self.instruction(I32Const(i32::from(
             adapter.lift.options.string_encoding as u8,
         )));
@@ -736,17 +733,42 @@ impl<'a, 'b> Compiler<'a, 'b> {
         // This inserts the initial check required by `canon_lower` that the
         // caller instance can be left and additionally checks the
         // flags on the callee if necessary whether it can be entered.
-        self.trap_if_not_flag(adapter.lower.flags, FLAG_MAY_LEAVE, Trap::CannotLeave);
+        self.trap_if_not_flag(
+            adapter.lower.flags,
+            FLAG_MAY_LEAVE,
+            Trap::CannotLeaveComponent,
+        );
         if adapter.called_as_export {
-            self.trap_if_not_flag(adapter.lift.flags, FLAG_MAY_ENTER, Trap::CannotEnter);
+            self.trap_if_not_flag(
+                adapter.lift.flags,
+                FLAG_MAY_ENTER,
+                Trap::CannotEnterComponent,
+            );
             self.set_flag(adapter.lift.flags, FLAG_MAY_ENTER, false);
         } else if self.module.debug {
             self.assert_not_flag(
                 adapter.lift.flags,
                 FLAG_MAY_ENTER,
-                "may_enter should be unset",
+                Trap::DebugAssertMayEnterUnset,
             );
         }
+
+        let task_may_block = self.module.import_task_may_block();
+        let old_task_may_block = if self.types[adapter.lift.ty].async_ {
+            self.instruction(GlobalGet(task_may_block.as_u32()));
+            self.instruction(I32Eqz);
+            self.instruction(If(BlockType::Empty));
+            self.trap(Trap::CannotBlockSyncTask);
+            self.instruction(End);
+            None
+        } else {
+            let task_may_block = self.module.import_task_may_block();
+            self.instruction(GlobalGet(task_may_block.as_u32()));
+            let old_task_may_block = self.local_set_new_tmp(ValType::I32);
+            self.instruction(I32Const(0));
+            self.instruction(GlobalSet(task_may_block.as_u32()));
+            Some(old_task_may_block)
+        };
 
         if self.emit_resource_call {
             let enter = self.module.import_resource_enter_call();
@@ -819,6 +841,13 @@ impl<'a, 'b> Compiler<'a, 'b> {
         if self.emit_resource_call {
             let exit = self.module.import_resource_exit_call();
             self.instruction(Call(exit.as_u32()));
+        }
+
+        if let Some(old_task_may_block) = old_task_may_block {
+            let task_may_block = self.module.import_task_may_block();
+            self.instruction(LocalGet(old_task_may_block.idx));
+            self.instruction(GlobalSet(task_may_block.as_u32()));
+            self.free_temp_local(old_task_may_block);
         }
 
         self.finish()
@@ -1929,7 +1958,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             self.ptr_sub(src_mem_opts);
             self.ptr_ne(src_mem_opts);
             self.instruction(If(BlockType::Empty));
-            self.trap(Trap::AssertFailed("should have finished encoding"));
+            self.trap(Trap::DebugAssertStringEncodingFinished);
             self.instruction(End);
         } else {
             self.instruction(Drop);
@@ -1957,7 +1986,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             self.instruction(LocalGet(dst_byte_len.idx));
             self.ptr_ne(dst_mem_opts);
             self.instruction(If(BlockType::Empty));
-            self.trap(Trap::AssertFailed("should have finished encoding"));
+            self.trap(Trap::DebugAssertStringEncodingFinished);
             self.instruction(End);
         }
 
@@ -2128,7 +2157,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
             self.convert_src_len_to_dst(src.len.idx, src_mem_opts.ptr(), dst_mem_opts.ptr());
             self.ptr_ne(dst_mem_opts);
             self.instruction(If(BlockType::Empty));
-            self.trap(Trap::AssertFailed("expected equal code units"));
+            self.trap(Trap::DebugAssertEqualCodeUnits);
             self.instruction(End);
         }
 
@@ -2325,7 +2354,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.ptr_uconst(mem_opts, max);
         self.ptr_ge_u(mem_opts);
         self.instruction(If(BlockType::Empty));
-        self.trap(Trap::StringLengthTooBig);
+        self.trap(Trap::StringOutOfBounds);
         self.instruction(End);
     }
 
@@ -2364,7 +2393,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         match &s.opts.data_model {
             DataModel::Gc {} => todo!("CM+GC"),
             DataModel::LinearMemory(opts) => {
-                self.validate_memory_inbounds(opts, s.ptr.idx, byte_len, Trap::StringLengthOverflow)
+                self.validate_memory_inbounds(opts, s.ptr.idx, byte_len, Trap::StringOutOfBounds)
             }
         }
     }
@@ -2499,13 +2528,13 @@ impl<'a, 'b> Compiler<'a, 'b> {
             src_mem_opts,
             src_mem.addr.idx,
             src_byte_len.idx,
-            Trap::ListByteLengthOverflow,
+            Trap::ListOutOfBounds,
         );
         self.validate_memory_inbounds(
             dst_mem_opts,
             dst_mem.addr.idx,
             dst_byte_len.idx,
-            Trap::ListByteLengthOverflow,
+            Trap::ListOutOfBounds,
         );
 
         self.free_temp_local(src_byte_len);
@@ -2626,7 +2655,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
                 self.instruction(I64ShrU);
                 self.instruction(I32WrapI64);
                 self.instruction(If(BlockType::Empty));
-                self.trap(Trap::ListByteLengthOverflow);
+                self.trap(Trap::ListOutOfBounds);
                 self.instruction(End);
             }
             self.instruction(LocalGet(len_local));
@@ -2678,7 +2707,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I64Eqz);
         self.instruction(BrIf(1));
         self.instruction(End);
-        self.trap(Trap::ListByteLengthOverflow);
+        self.trap(Trap::ListOutOfBounds);
         self.instruction(End);
 
         // If a fresh local was used to store the result of the multiplication
@@ -3258,12 +3287,12 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(End);
     }
 
-    fn assert_not_flag(&mut self, flags_global: GlobalIndex, flag_to_test: i32, msg: &'static str) {
+    fn assert_not_flag(&mut self, flags_global: GlobalIndex, flag_to_test: i32, trap: Trap) {
         self.instruction(GlobalGet(flags_global.as_u32()));
         self.instruction(I32Const(flag_to_test));
         self.instruction(I32And);
         self.instruction(If(BlockType::Empty));
-        self.trap(Trap::AssertFailed(msg));
+        self.trap(trap);
         self.instruction(End);
     }
 
@@ -3310,7 +3339,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.ptr_uconst(mem_opts, align - 1);
         self.ptr_and(mem_opts);
         self.ptr_if(mem_opts, BlockType::Empty);
-        self.trap(Trap::AssertFailed("pointer not aligned"));
+        self.trap(Trap::DebugAssertPointerAligned);
         self.instruction(End);
     }
 
@@ -3406,22 +3435,23 @@ impl<'a, 'b> Compiler<'a, 'b> {
     }
 
     fn trap(&mut self, trap: Trap) {
-        self.traps.push((self.code.len(), trap));
+        let trap_func = self.module.import_trap();
+        self.instruction(I32Const(trap as i32));
+        self.instruction(Call(trap_func.as_u32()));
         self.instruction(Unreachable);
     }
 
-    /// Flushes out the current `code` instructions (and `traps` if there are
-    /// any) into the destination function.
+    /// Flushes out the current `code` instructions into the destination
+    /// function.
     ///
     /// This is a noop if no instructions have been encoded yet.
     fn flush_code(&mut self) {
         if self.code.is_empty() {
             return;
         }
-        self.module.funcs[self.result].body.push(Body::Raw(
-            mem::take(&mut self.code),
-            mem::take(&mut self.traps),
-        ));
+        self.module.funcs[self.result]
+            .body
+            .push(Body::Raw(mem::take(&mut self.code)));
     }
 
     fn finish(mut self) {
@@ -3493,7 +3523,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
         self.instruction(I64ShrU);
         self.instruction(I32WrapI64);
         self.instruction(If(BlockType::Empty));
-        self.trap(Trap::AssertFailed("upper bits are unexpectedly set"));
+        self.trap(Trap::DebugAssertUpperBitsUnset);
         self.instruction(End);
     }
 

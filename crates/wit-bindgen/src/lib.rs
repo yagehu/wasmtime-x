@@ -450,7 +450,7 @@ impl Wasmtime {
                             #[allow(clippy::all)]
                             pub mod {snake} {{
                                 #[allow(unused_imports)]
-                                use {wt}::component::__internal::{{anyhow, Box}};
+                                use {wt}::component::__internal::{{Box}};
 
                                 {module}
                             }}
@@ -503,19 +503,19 @@ impl Wasmtime {
                 let typecheck = format!(
                     "match item {{
                             {wt}::component::types::ComponentItem::ComponentFunc(func) => {{
-                                anyhow::Context::context(
+                                {wt}::error::Context::context(
                                     func.typecheck::<{sig}>(&_instance_type),
                                     \"type-checking export func `{0}`\"
                                 )?;
                                 index
                             }}
-                            _ => Err(anyhow::anyhow!(\"export `{0}` is not a function\"))?,
+                            _ => Err({wt}::format_err!(\"export `{0}` is not a function\"))?,
                         }}",
                     func.name
                 );
                 get_index = format!(
                     "{{ let (item, index) = _component.get_export(None, \"{}\")
-                        .ok_or_else(|| anyhow::anyhow!(\"no export `{0}` found\"))?;
+                        .ok_or_else(|| {wt}::format_err!(\"no export `{0}` found\"))?;
                         {typecheck}
                      }}",
                     func.name
@@ -536,6 +536,7 @@ impl Wasmtime {
                     WorldKey::Name(name) => name,
                     WorldKey::Interface(_) => iface.name.as_ref().unwrap(),
                 };
+                uwriteln!(generator.src, "#[derive(Clone)]");
                 uwriteln!(generator.src, "pub struct {struct_name} {{");
                 for (_, func) in iface.functions.iter() {
                     uwriteln!(
@@ -572,10 +573,10 @@ pub fn new<_T>(
     _instance_pre: &{wt}::component::InstancePre<_T>,
 ) -> {wt}::Result<{struct_name}Indices> {{
     let instance = _instance_pre.component().get_export_index(None, \"{instance_name}\")
-        .ok_or_else(|| anyhow::anyhow!(\"no exported instance named `{instance_name}`\"))?;
+        .ok_or_else(|| {wt}::format_err!(\"no exported instance named `{instance_name}`\"))?;
     let mut lookup = move |name| {{
         _instance_pre.component().get_export_index(Some(&instance), name).ok_or_else(|| {{
-            anyhow::anyhow!(
+            {wt}::format_err!(
                 \"instance export `{instance_name}` does \\
                   not have export `{{name}}`\"
             )
@@ -672,7 +673,7 @@ pub fn new<_T>(
                         #[allow(clippy::all)]
                         pub mod {snake} {{
                             #[allow(unused_imports)]
-                            use {wt}::component::__internal::{{anyhow, Box}};
+                            use {wt}::component::__internal::Box;
 
                             {module}
                         }}
@@ -871,13 +872,6 @@ impl<_T: Send + 'static> {camel}Pre<_T> {{
         let world_trait = self.world_imports_trait(resolve, world);
 
         uwriteln!(self.src, "const _: () = {{");
-        uwriteln!(
-            self.src,
-            "
-                #[allow(unused_imports)]
-                use {wt}::component::__internal::anyhow;
-            "
-        );
 
         uwriteln!(
             self.src,
@@ -1626,6 +1620,7 @@ impl<'a> InterfaceGenerator<'a> {
             TypeDefKind::Resource => self.type_resource(id, name, ty, &ty.docs),
             TypeDefKind::Unknown => unreachable!(),
             TypeDefKind::FixedSizeList(..) => todo!(),
+            TypeDefKind::Map(..) => todo!(),
         }
     }
 
@@ -3415,6 +3410,7 @@ fn type_contains_lists(ty: Type, resolve: &Resolve) -> bool {
             TypeDefKind::Type(ty) => type_contains_lists(*ty, resolve),
             TypeDefKind::List(_) => true,
             TypeDefKind::FixedSizeList(..) => todo!(),
+            TypeDefKind::Map(..) => todo!(),
         },
 
         // Technically strings are lists too, but we ignore that here because

@@ -115,6 +115,7 @@ pub mod raw {
                 // with conversion of the return value in the face of traps.
                 #[allow(improper_ctypes_definitions, reason = "__m128i known not FFI-safe")]
                 #[allow(unused_variables, reason = "macro-generated")]
+                #[allow(unreachable_code, reason = "some types uninhabited on some platforms")]
                 pub unsafe extern "C" fn $name(
                     vmctx: NonNull<VMContext>,
                     $( $pname : libcall!(@ty $param), )*
@@ -198,7 +199,7 @@ macro_rules! block_on {
             // Note that if `async_support` is disabled then it should not be
             // possible to introduce await points so the provided future should
             // always be ready.
-            anyhow::Ok(vm::assert_ready(closure(store)))
+            crate::error::Ok(vm::assert_ready(closure(store)))
         }
     }};
 }
@@ -1255,6 +1256,11 @@ fn out_of_gas(store: &mut dyn VMStore, _instance: InstanceId) -> Result<()> {
 fn new_epoch(store: &mut dyn VMStore, _instance: InstanceId) -> Result<NextEpoch> {
     use crate::UpdateDeadline;
 
+    #[cfg(feature = "debug")]
+    {
+        store.block_on_debug_handler(crate::DebugEvent::EpochYield)?;
+    }
+
     let update_deadline = store.new_epoch_updated_deadline()?;
     block_on!(store, async move |store| {
         let delta = match update_deadline {
@@ -1703,4 +1709,15 @@ fn throw_ref(
         .expect("gc ref should be an exception object");
     store.set_pending_exception(exnref);
     Err(TrapReason::Exception)
+}
+
+fn breakpoint(store: &mut dyn VMStore, _instance: InstanceId) -> Result<()> {
+    #[cfg(feature = "debug")]
+    {
+        log::trace!("hit breakpoint");
+        store.block_on_debug_handler(crate::DebugEvent::Breakpoint)?;
+    }
+    // Avoid unused-argument warning in no-debugger builds.
+    let _ = store;
+    Ok(())
 }

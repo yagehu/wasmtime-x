@@ -20,5 +20,5 @@ witx = { git = "https://github.com/yagehu/wasi.git", branch = "yagehu/memory64" 
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
 heck = { workspace = true }
-anyhow = { workspace = true }
+wasmtime-environ = { workspace = true }
 syn = { workspace = true, features = ["full"] }

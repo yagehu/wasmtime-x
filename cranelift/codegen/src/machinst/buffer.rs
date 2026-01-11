@@ -180,15 +180,15 @@ use crate::machinst::{
 use crate::trace;
 use crate::{MachInstEmitState, ir};
 use crate::{VCodeConstantData, timing};
+use alloc::collections::BinaryHeap;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::mem;
 use core::ops::Range;
 use cranelift_control::ControlPlane;
 use cranelift_entity::{PrimaryMap, SecondaryMap, entity_impl};
 use smallvec::SmallVec;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-use std::mem;
-use std::string::String;
-use std::vec::Vec;
 
 #[cfg(feature = "enable-serde")]
 use serde::{Deserialize, Serialize};
@@ -355,7 +355,7 @@ impl MachBufferFinalized<Stencil> {
             unwind_info: self.unwind_info,
             alignment: self.alignment,
             frame_layout: self.frame_layout,
-            nop: self.nop,
+            nop_units: self.nop_units,
         }
     }
 }
@@ -406,7 +406,10 @@ pub struct MachBufferFinalized<T: CompilePhase> {
     /// This allows a consumer of a `MachBufferFinalized` to disable
     /// patchable call sites (which are enabled by default) without
     /// specific knowledge of the target ISA.
-    pub nop: SmallVec<[u8; 8]>,
+    ///
+    /// Each entry is one form of nop, and these are required to be
+    /// sorted in ascending-size order.
+    pub nop_units: Vec<Vec<u8>>,
 }
 
 const UNKNOWN_LABEL_OFFSET: CodeOffset = 0xffff_ffff;
@@ -1586,7 +1589,7 @@ impl<I: VCodeInst> MachBuffer<I> {
             unwind_info: self.unwind_info,
             alignment,
             frame_layout: self.frame_layout,
-            nop: I::gen_nop_unit(),
+            nop_units: I::gen_nop_units(),
         }
     }
 
@@ -1817,7 +1820,7 @@ impl<T: CompilePhase> MachBufferFinalized<T> {
     /// Return the code in this mach buffer as a hex string for testing purposes.
     pub fn stringify_code_bytes(&self) -> String {
         // This is pretty lame, but whatever ..
-        use std::fmt::Write;
+        use core::fmt::Write;
         let mut s = String::with_capacity(self.data.len() * 2);
         for b in &self.data {
             write!(&mut s, "{b:02X}").unwrap();
@@ -1839,6 +1842,12 @@ impl<T: CompilePhase> MachBufferFinalized<T> {
         // to add the appropriate relocations in this case.
 
         &self.data[..]
+    }
+
+    /// Get a mutable slice of the code bytes, allowing patching
+    /// post-passes.
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..]
     }
 
     /// Get the list of external relocations for this code.
@@ -1900,10 +1909,7 @@ impl<T: CompilePhase> MachBufferFinalized<T> {
     /// region is guaranteed to be an integer multiple of that NOP
     /// unit size.)
     pub fn patchable_call_sites(&self) -> impl Iterator<Item = &MachPatchableCallSite> + '_ {
-        self.patchable_call_sites.iter().map(|call_site| {
-            debug_assert!(call_site.len as usize % self.nop.len() == 0);
-            call_site
-        })
+        self.patchable_call_sites.iter()
     }
 }
 

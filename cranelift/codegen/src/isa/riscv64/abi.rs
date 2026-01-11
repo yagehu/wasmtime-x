@@ -19,8 +19,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 
+use alloc::borrow::ToOwned;
 use smallvec::{SmallVec, smallvec};
-use std::borrow::ToOwned;
 use std::sync::OnceLock;
 
 /// Support for the Riscv64 ABI from the callee side (within a function body).
@@ -59,7 +59,7 @@ impl RiscvFlags {
 
             // Due to a limitation in regalloc2, we can't support types
             // larger than 1024 bytes. So limit that here.
-            return std::cmp::min(size, 1024);
+            return core::cmp::min(size, 1024);
         }
 
         return 0;
@@ -165,7 +165,7 @@ impl ABIMachineSpec for Riscv64MachineDeps {
                     // Compute size and 16-byte stack alignment happens
                     // separately after all args.
                     let size = reg_ty.bits() / 8;
-                    let size = std::cmp::max(size, 8);
+                    let size = core::cmp::max(size, 8);
                     // Align.
                     debug_assert!(size.is_power_of_two());
                     next_stack = align_to(next_stack, size);
@@ -593,6 +593,7 @@ impl ABIMachineSpec for Riscv64MachineDeps {
                 callee_conv: call_conv,
                 callee_pop_size: 0,
                 try_call_info: None,
+                patchable: false,
             }),
         });
         insts
@@ -622,7 +623,13 @@ impl ABIMachineSpec for Riscv64MachineDeps {
     ) -> PRegSet {
         match call_conv_of_callee {
             isa::CallConv::Tail if is_exception => ALL_CLOBBERS,
-            isa::CallConv::Patchable => NO_CLOBBERS,
+            // Note that "PreserveAll" actually preserves nothing at
+            // the callsite if used for a `try_call`, because the
+            // unwinder ABI for `try_call`s is still "no clobbered
+            // register restores" for this ABI (so as to work with
+            // Wasmtime).
+            isa::CallConv::PreserveAll if is_exception => ALL_CLOBBERS,
+            isa::CallConv::PreserveAll => NO_CLOBBERS,
             _ => DEFAULT_CLOBBERS,
         }
     }
@@ -640,7 +647,7 @@ impl ABIMachineSpec for Riscv64MachineDeps {
         outgoing_args_size: u32,
     ) -> FrameLayout {
         let is_callee_saved = |reg: &Writable<RealReg>| match call_conv {
-            isa::CallConv::Patchable => true,
+            isa::CallConv::PreserveAll => true,
             _ => DEFAULT_CALLEE_SAVES.contains(reg.to_reg().into()),
         };
         let mut regs: Vec<Writable<RealReg>> =
@@ -720,7 +727,9 @@ impl ABIMachineSpec for Riscv64MachineDeps {
     fn exception_payload_regs(call_conv: isa::CallConv) -> &'static [Reg] {
         const PAYLOAD_REGS: &'static [Reg] = &[regs::a0(), regs::a1()];
         match call_conv {
-            isa::CallConv::SystemV | isa::CallConv::Tail => PAYLOAD_REGS,
+            isa::CallConv::SystemV | isa::CallConv::Tail | isa::CallConv::PreserveAll => {
+                PAYLOAD_REGS
+            }
             _ => &[],
         }
     }

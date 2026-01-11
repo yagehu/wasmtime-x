@@ -1,11 +1,11 @@
 //! Compilation support for the component model.
 
 use crate::{TRAP_ALWAYS, TRAP_CANNOT_ENTER, TRAP_INTERNAL_ASSERT, compiler::Compiler};
-use anyhow::{Result, bail};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, Value};
 use cranelift_codegen::isa::{CallConv, TargetIsa};
 use cranelift_frontend::FunctionBuilder;
+use wasmtime_environ::error::{Result, bail};
 use wasmtime_environ::{
     Abi, CompiledFunctionBody, EntityRef, FuncKey, HostCall, PtrSize, TrapSentinel, Tunables,
     WasmFuncType, WasmValType, component::*, fact::PREPARE_CALL_FIXED_PARAMS,
@@ -171,7 +171,7 @@ impl<'a> TrampolineCompiler<'a> {
                     WasmArgs::InRegisters,
                     |me, params| {
                         let code = wasmtime_environ::Trap::AlwaysTrapAdapter as u8;
-                        params.push(me.builder.ins().iconst(ir::types::I8, i64::from(code)));
+                        params.push(me.builder.ins().iconst(ir::types::I32, i64::from(code)));
                     },
                 );
             }
@@ -203,16 +203,6 @@ impl<'a> TrampolineCompiler<'a> {
             }
             Trampoline::ResourceDrop { instance, ty } => {
                 self.translate_resource_drop(*instance, *ty);
-            }
-            Trampoline::BackpressureSet { instance } => {
-                self.translate_libcall(
-                    host::backpressure_set,
-                    TrapSentinel::Falsy,
-                    WasmArgs::InRegisters,
-                    |me, params| {
-                        params.push(me.index_value(*instance));
-                    },
-                );
             }
             Trampoline::BackpressureInc { instance } => {
                 self.translate_libcall(
@@ -742,6 +732,14 @@ impl<'a> TrampolineCompiler<'a> {
                     |_, _| {},
                 );
             }
+            Trampoline::Trap => {
+                self.translate_libcall(
+                    host::trap,
+                    TrapSentinel::Falsy,
+                    WasmArgs::InRegisters,
+                    |_, _| {},
+                );
+            }
             Trampoline::ContextGet { instance, slot } => {
                 self.translate_libcall(
                     host::context_get,
@@ -858,17 +856,19 @@ impl<'a> TrampolineCompiler<'a> {
     /// Determine whether the specified type can be optimized as a stream
     /// payload by lifting and lowering with a simple `memcpy`.
     ///
-    /// Any type containing only "flat", primitive data (i.e. no pointers or
-    /// handles) should qualify for this optimization, but it's also okay to
-    /// conservatively return `None` here; the fallback slow path will always
-    /// work -- it just won't be as efficient.
+    /// Any type containing only "flat", primitive data for which all bit
+    /// patterns are valid (i.e. no pointers, handles, bools, or chars) should
+    /// qualify for this optimization, but it's also okay to conservatively
+    /// return `None` here; the fallback slow path will always work -- it just
+    /// won't be as efficient.
     fn flat_stream_element_info(&self, ty: TypeStreamTableIndex) -> Option<&CanonicalAbiInfo> {
         let payload = self.types[self.types[ty].ty].payload;
         match payload {
             None => Some(&CanonicalAbiInfo::ZERO),
             Some(
-                payload @ (InterfaceType::Bool
-                | InterfaceType::S8
+                // Note that we exclude `Bool` and `Char` from this list because
+                // not all bit patterns are valid for those types.
+                payload @ (InterfaceType::S8
                 | InterfaceType::U8
                 | InterfaceType::S16
                 | InterfaceType::U16
@@ -877,8 +877,7 @@ impl<'a> TrampolineCompiler<'a> {
                 | InterfaceType::S64
                 | InterfaceType::U64
                 | InterfaceType::Float32
-                | InterfaceType::Float64
-                | InterfaceType::Char),
+                | InterfaceType::Float64),
             ) => Some(self.types.canonical_abi(&payload)),
             // TODO: Recursively check for other "flat" types (i.e. those without pointers or handles),
             // e.g. `record`s, `variant`s, etc. which contain only flat types.
@@ -1133,9 +1132,13 @@ impl<'a> TrampolineCompiler<'a> {
         //    run_destructor_block:
         //      ;; test may_enter, but only if the component instances
         //      ;; differ
-        //      flags = load.i32 vmctx+$offset
+        //      flags = load.i32 vmctx+$instance_flags_offset
         //      masked = band flags, $FLAG_MAY_ENTER
         //      trapz masked, CANNOT_ENTER_CODE
+        //
+        //      ;; set may_block to false, saving the old value to restore later
+        //      old_may_block = load.i32 vmctx+$may_block_offset
+        //      store 0, vmctx+$may_block_offset
         //
         //      ;; ============================================================
         //      ;; this is conditionally emitted based on whether the resource
@@ -1148,6 +1151,9 @@ impl<'a> TrampolineCompiler<'a> {
         //      callee_vmctx = load.ptr dtor+$offset
         //      call_indirect func_addr, callee_vmctx, vmctx, rep
         //      ;; ============================================================
+        //
+        //      ;; restore old value of may_block
+        //      store old_may_block, vmctx+$may_block_offset
         //
         //      jump return_block
         //
@@ -1183,7 +1189,7 @@ impl<'a> TrampolineCompiler<'a> {
         // that this check can be elided if the resource table resides in
         // the same component instance that defined the resource as the
         // component is calling itself.
-        if let Some(def) = resource_def {
+        let old_may_block = if let Some(def) = resource_def {
             if self.types[resource].unwrap_concrete_instance() != def.instance {
                 let flags = self.builder.ins().load(
                     ir::types::I32,
@@ -1196,8 +1202,29 @@ impl<'a> TrampolineCompiler<'a> {
                     .ins()
                     .band_imm(flags, i64::from(FLAG_MAY_ENTER));
                 self.builder.ins().trapz(masked, TRAP_CANNOT_ENTER);
+
+                // Stash the old value of `may_block` and then set it to false.
+                let old_may_block = self.builder.ins().load(
+                    ir::types::I32,
+                    trusted,
+                    vmctx,
+                    i32::try_from(self.offsets.task_may_block()).unwrap(),
+                );
+                let zero = self.builder.ins().iconst(ir::types::I32, i64::from(0));
+                self.builder.ins().store(
+                    ir::MemFlags::trusted(),
+                    zero,
+                    vmctx,
+                    i32::try_from(self.offsets.task_may_block()).unwrap(),
+                );
+
+                Some(old_may_block)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // Conditionally emit destructor-execution code based on whether we
         // statically know that a destructor exists or not.
@@ -1246,6 +1273,16 @@ impl<'a> TrampolineCompiler<'a> {
                 &[callee_vmctx, caller_vmctx, rep],
             );
         }
+
+        if let Some(old_may_block) = old_may_block {
+            self.builder.ins().store(
+                ir::MemFlags::trusted(),
+                old_may_block,
+                vmctx,
+                i32::try_from(self.offsets.task_may_block()).unwrap(),
+            );
+        }
+
         self.builder.ins().jump(return_block, &[]);
         self.builder.seal_block(run_destructor_block);
 
@@ -1422,6 +1459,10 @@ impl ComponentCompiler for Compiler {
                     wasmtime_environ::component::VMCOMPONENT_MAGIC,
                 )?);
             }
+
+            Abi::Patchable => unreachable!(
+                "We should not be compiling a patchable-ABI trampoline for a component function"
+            ),
         }
 
         let mut compiler = self.function_compiler();
@@ -1500,6 +1541,12 @@ impl ComponentCompiler for Compiler {
                     offsets.vm_store_context(),
                     wasmtime_environ::component::VMCOMPONENT_MAGIC,
                 )?);
+            }
+
+            Abi::Patchable => {
+                unreachable!(
+                    "We should not be compiling a patchable trampoline for a component intrinsic"
+                )
             }
         }
 

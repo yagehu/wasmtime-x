@@ -1,12 +1,12 @@
 use crate::Engine;
 use crate::Module;
+use crate::Result;
 use crate::module::ModuleRegistry;
 use crate::vm::ModuleMemoryImageSource;
 use crate::{code_memory::CodeMemory, type_registry::TypeCollection};
 #[cfg(feature = "debug")]
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use anyhow::Result;
 use core::ops::{Add, Range, Sub};
 use wasmtime_environ::DefinedFuncIndex;
 use wasmtime_environ::ModuleTypes;
@@ -461,7 +461,7 @@ impl<'a> ModuleWithCode<'a> {
 
     /// Get the text offset (relative PC) for a given absolute PC in
     /// this module.
-    #[cfg(any(feature = "gc", feature = "debug"))]
+    #[cfg(feature = "gc")]
     pub(crate) fn text_offset(&self, pc: usize) -> Option<u32> {
         StoreCodePC::offset_of(self.store_code.text_range(), pc)
             .map(|offset| u32::try_from(offset).expect("Module larger than 4GiB"))

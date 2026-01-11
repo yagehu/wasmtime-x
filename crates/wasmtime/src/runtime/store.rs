@@ -76,8 +76,6 @@
 //! contents of `StoreOpaque`. This is an invariant that we, as the authors of
 //! `wasmtime`, must uphold for the public interface to be safe.
 
-#[cfg(feature = "debug")]
-use crate::DebugHandler;
 #[cfg(all(feature = "gc", feature = "debug"))]
 use crate::OwnedRooted;
 use crate::RootSet;
@@ -103,6 +101,8 @@ use crate::runtime::vm::{
     VMStoreContext,
 };
 use crate::trampoline::VMHostGlobalContext;
+#[cfg(feature = "debug")]
+use crate::{BreakpointState, DebugHandler};
 use crate::{Engine, Module, Val, ValRaw, module::ModuleRegistry};
 #[cfg(feature = "gc")]
 use crate::{ExnRef, Rooted};
@@ -345,7 +345,7 @@ impl StoreResourceLimiter<'_> {
         }
     }
 
-    pub(crate) fn memory_grow_failed(&mut self, error: anyhow::Error) -> Result<()> {
+    pub(crate) fn memory_grow_failed(&mut self, error: crate::Error) -> Result<()> {
         match self {
             Self::Sync(s) => s.memory_grow_failed(error),
             #[cfg(feature = "async")]
@@ -366,7 +366,7 @@ impl StoreResourceLimiter<'_> {
         }
     }
 
-    pub(crate) fn table_grow_failed(&mut self, error: anyhow::Error) -> Result<()> {
+    pub(crate) fn table_grow_failed(&mut self, error: crate::Error) -> Result<()> {
         match self {
             Self::Sync(s) => s.table_grow_failed(error),
             #[cfg(feature = "async")]
@@ -550,6 +550,20 @@ pub struct StoreOpaque {
     /// For example if Pulley is enabled and configured then this will store a
     /// Pulley interpreter.
     executor: Executor,
+
+    /// The debug breakpoint state for this store.
+    ///
+    /// When guest debugging is enabled, a given store may have a set
+    /// of breakpoints defined, denoted by module and Wasm PC within
+    /// that module. Or alternately, it may be in "single-step" mode,
+    /// where every possible breakpoint is logically enabled.
+    ///
+    /// When execution of any instance in this store hits any defined
+    /// breakpoint, a `Breakpoint` debug event is emitted and the
+    /// handler defined above, if any, has a chance to perform some
+    /// logic before returning to allow execution to resume.
+    #[cfg(feature = "debug")]
+    breakpoints: BreakpointState,
 }
 
 /// Self-pointer to `StoreInner<T>` from within a `StoreOpaque` which is chiefly
@@ -758,6 +772,8 @@ impl<T> Store<T> {
             executor: Executor::new(engine),
             #[cfg(feature = "component-model")]
             concurrent_state: Default::default(),
+            #[cfg(feature = "debug")]
+            breakpoints: Default::default(),
         };
         let mut inner = Box::new(StoreInner {
             inner,
@@ -1240,16 +1256,29 @@ impl<T> Store<T> {
     /// VM-level values (locals and operand stack), when debugging is
     /// enabled.
     ///
-    /// This object views the frames from the most recent Wasm entry
-    /// onward (up to the exit that allows this host code to run). Any
-    /// Wasm stack frames upward from the most recent entry to Wasm
-    /// are not visible to this cursor.
-    ///
     /// Returns `None` if debug instrumentation is not enabled for
     /// the engine containing this store.
     #[cfg(feature = "debug")]
     pub fn debug_frames(&mut self) -> Option<crate::DebugFrameCursor<'_, T>> {
         self.as_context_mut().debug_frames()
+    }
+
+    /// Start an edit session to update breakpoints.
+    #[cfg(feature = "debug")]
+    pub fn edit_breakpoints(&mut self) -> Option<crate::BreakpointEdit<'_>> {
+        self.as_context_mut().edit_breakpoints()
+    }
+
+    /// Return all breakpoints.
+    #[cfg(feature = "debug")]
+    pub fn breakpoints(&self) -> Option<impl Iterator<Item = crate::Breakpoint> + '_> {
+        self.as_context().breakpoints()
+    }
+
+    /// Indicate whether single-step mode is enabled.
+    #[cfg(feature = "debug")]
+    pub fn is_single_step(&self) -> bool {
+        self.as_context().is_single_step()
     }
 
     /// Set the debug callback on this store.
@@ -1619,6 +1648,18 @@ impl StoreOpaque {
 
     pub fn store_data_mut_and_registry(&mut self) -> (&mut StoreData, &ModuleRegistry) {
         (&mut self.store_data, &self.modules)
+    }
+
+    #[cfg(feature = "debug")]
+    pub(crate) fn breakpoints_and_registry_mut(
+        &mut self,
+    ) -> (&mut BreakpointState, &mut ModuleRegistry) {
+        (&mut self.breakpoints, &mut self.modules)
+    }
+
+    #[cfg(feature = "debug")]
+    pub(crate) fn breakpoints_and_registry(&self) -> (&BreakpointState, &ModuleRegistry) {
+        (&self.breakpoints, &self.modules)
     }
 
     #[inline]
@@ -2247,7 +2288,7 @@ impl StoreOpaque {
     }
 
     pub fn get_fuel(&self) -> Result<u64> {
-        anyhow::ensure!(
+        crate::ensure!(
             self.engine().tunables().consume_fuel,
             "fuel is not configured in this store"
         );
@@ -2265,7 +2306,7 @@ impl StoreOpaque {
     }
 
     pub fn set_fuel(&mut self, fuel: u64) -> Result<()> {
-        anyhow::ensure!(
+        crate::ensure!(
             self.engine().tunables().consume_fuel,
             "fuel is not configured in this store"
         );
@@ -2280,15 +2321,15 @@ impl StoreOpaque {
     }
 
     pub fn fuel_async_yield_interval(&mut self, interval: Option<u64>) -> Result<()> {
-        anyhow::ensure!(
+        crate::ensure!(
             self.engine().tunables().consume_fuel,
             "fuel is not configured in this store"
         );
-        anyhow::ensure!(
+        crate::ensure!(
             self.engine().config().async_support,
             "async support is not configured in this store"
         );
-        anyhow::ensure!(
+        crate::ensure!(
             interval != Some(0),
             "fuel_async_yield_interval must not be 0"
         );
@@ -2796,8 +2837,11 @@ unsafe impl<T> VMStore for StoreInner<T> {
     }
 
     #[cfg(feature = "debug")]
-    fn block_on_debug_handler(&mut self, event: crate::DebugEvent<'_>) -> anyhow::Result<()> {
+    fn block_on_debug_handler(&mut self, event: crate::DebugEvent<'_>) -> crate::Result<()> {
         if let Some(handler) = self.debug_handler.take() {
+            if !self.can_block() {
+                bail!("could not invoke debug handler without async context");
+            }
             log::trace!("about to raise debug event {event:?}");
             StoreContextMut(self).with_blocking(|store, cx| {
                 cx.block_on(Pin::from(handler.handle(store, event)).as_mut())

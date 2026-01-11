@@ -1,15 +1,6 @@
-use std::error::Error as StdError;
-use std::fmt::{Debug, Display};
-use std::ops::Deref;
+use std::fmt::Debug;
 
 use crate::{Region, Width};
-
-// pub trait BoxedError: Debug + Display + Deref<Target = dyn StdError> {}
-
-// impl<E: Debug + Display + Deref<Target = dyn StdError>> BoxedError for E {}
-pub trait BoxedError: Debug + Display + Deref<Target = dyn StdError> {}
-
-impl<E: Debug + Display + Deref<Target = dyn StdError>> BoxedError for E {}
 
 #[derive(Debug, thiserror::Error)]
 pub enum GuestError<W: Width> {

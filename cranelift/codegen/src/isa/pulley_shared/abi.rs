@@ -9,12 +9,12 @@ use crate::{
     machinst::*,
     settings,
 };
+use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use cranelift_bitset::ScalarBitSet;
 use regalloc2::{MachineEnv, PReg, PRegSet};
 use smallvec::{SmallVec, smallvec};
-use std::borrow::ToOwned;
 use std::sync::OnceLock;
 
 /// Support for the Pulley ABI from the callee side (within a function body).
@@ -130,7 +130,7 @@ where
                     // Compute size and 16-byte stack alignment happens
                     // separately after all args.
                     let size = reg_ty.bits() / 8;
-                    let size = std::cmp::max(size, 8);
+                    let size = core::cmp::max(size, 8);
 
                     // Align.
                     debug_assert!(size.is_power_of_two());
@@ -483,10 +483,10 @@ where
         call_conv_of_callee: isa::CallConv,
         is_exception: bool,
     ) -> PRegSet {
-        if call_conv_of_callee == isa::CallConv::Patchable {
-            NO_CLOBBERS
-        } else if is_exception {
+        if is_exception {
             ALL_CLOBBERS
+        } else if call_conv_of_callee == isa::CallConv::PreserveAll {
+            NO_CLOBBERS
         } else {
             DEFAULT_CLOBBERS
         }
@@ -505,7 +505,7 @@ where
         outgoing_args_size: u32,
     ) -> FrameLayout {
         let is_callee_save = |reg: &Writable<RealReg>| match call_conv {
-            isa::CallConv::Patchable => true,
+            isa::CallConv::PreserveAll => true,
             _ => DEFAULT_CALLEE_SAVES.contains(reg.to_reg().into()),
         };
         let mut regs: Vec<Writable<RealReg>> =
