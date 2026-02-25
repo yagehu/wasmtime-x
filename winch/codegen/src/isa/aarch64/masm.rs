@@ -764,8 +764,13 @@ impl Masm for MacroAssembler {
         size: OperandSize,
     ) -> Result<()> {
         match ImmShift::maybe_from_u64(imm.unwrap_as_u64()) {
-            Some(imml) => self.asm.shift_ir(imml, lhs, dst, kind, size),
-            None => {
+            // Immediate Ranges:
+            //   32-bit variant: 0-31
+            //   64-bit variant: 0-63
+            Some(imml) if imml.value() < size.num_bits() => {
+                self.asm.shift_ir(imml, lhs, dst, kind, size)
+            }
+            _ => {
                 self.with_scratch::<IntScratch, _>(|masm, scratch| {
                     masm.asm.mov_ir(scratch.writable(), imm, imm.size());
                     masm.asm.shift_rrr(scratch.inner(), lhs, dst, kind, size);

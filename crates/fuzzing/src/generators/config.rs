@@ -140,6 +140,7 @@ impl Config {
             component_model_threading,
             component_model_error_context,
             component_model_gc,
+            component_model_fixed_length_lists,
             simd,
             exceptions,
             legacy_exceptions: _,
@@ -165,6 +166,8 @@ impl Config {
         self.module_config.component_model_error_context =
             component_model_error_context.unwrap_or(false);
         self.module_config.component_model_gc = component_model_gc.unwrap_or(false);
+        self.module_config.component_model_fixed_length_lists =
+            component_model_fixed_length_lists.unwrap_or(false);
 
         // Enable/disable proposals that wasm-smith has knobs for which will be
         // read when creating `wasmtime::Config`.
@@ -290,6 +293,8 @@ impl Config {
         cfg.wasm.component_model_error_context =
             Some(self.module_config.component_model_error_context);
         cfg.wasm.component_model_gc = Some(self.module_config.component_model_gc);
+        cfg.wasm.component_model_fixed_length_lists =
+            Some(self.module_config.component_model_fixed_length_lists);
         cfg.wasm.custom_page_sizes = Some(self.module_config.config.custom_page_sizes_enabled);
         cfg.wasm.epoch_interruption = Some(self.wasmtime.epoch_interruption);
         cfg.wasm.extended_const = Some(self.module_config.config.extended_const_enabled);
@@ -666,7 +671,7 @@ impl WasmtimeConfig {
                 // config features are enabled based on the compiler strategy, and we
                 // don't want to make the same fuzz input DNA generate different test
                 // cases on different targets.
-                if cfg!(not(target_arch = "x86_64")) {
+                if cfg!(not(any(target_arch = "x86_64", target_arch = "aarch64"))) {
                     log::warn!(
                         "want to compile with Winch but host architecture does not support it"
                     );
@@ -693,6 +698,14 @@ impl WasmtimeConfig {
                         .is_some_and(|value| value == "false")
                 {
                     config.config.simd_enabled = false;
+                }
+
+                // Account for the proposals that are currently only
+                // supported on x64.
+                if cfg!(target_arch = "aarch64") {
+                    config.config.simd_enabled = false;
+                    config.config.wide_arithmetic_enabled = false;
+                    config.config.threads_enabled = false;
                 }
 
                 // Tuning  the following engine options is currently not supported

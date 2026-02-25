@@ -346,6 +346,48 @@ pub mod foo {
                     4 == < TupleTypedef2 as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
+            #[derive(wasmtime::component::ComponentType)]
+            #[derive(wasmtime::component::Lift)]
+            #[derive(wasmtime::component::Lower)]
+            #[component(record)]
+            pub struct FuturesAndStreams {
+                #[component(name = "a")]
+                pub a: wasmtime::component::FutureReader<u8>,
+                #[component(name = "b")]
+                pub b: wasmtime::component::StreamReader<u8>,
+                #[component(name = "c")]
+                pub c: wasmtime::component::StreamReader<
+                    wasmtime::component::FutureReader<
+                        wasmtime::component::StreamReader<()>,
+                    >,
+                >,
+                #[component(name = "d")]
+                pub d: wasmtime::component::FutureReader<
+                    wasmtime::component::StreamReader<
+                        wasmtime::component::FutureReader<()>,
+                    >,
+                >,
+            }
+            impl core::fmt::Debug for FuturesAndStreams {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    f.debug_struct("FuturesAndStreams")
+                        .field("a", &self.a)
+                        .field("b", &self.b)
+                        .field("c", &self.c)
+                        .field("d", &self.d)
+                        .finish()
+                }
+            }
+            const _: () = {
+                assert!(
+                    16 == < FuturesAndStreams as wasmtime::component::ComponentType
+                    >::SIZE32
+                );
+                assert!(
+                    4 == < FuturesAndStreams as wasmtime::component::ComponentType
+                    >::ALIGN32
+                );
+            };
             pub trait HostWithStore: wasmtime::component::HasData {}
             impl<_T: ?Sized> HostWithStore for _T
             where
@@ -711,6 +753,51 @@ pub mod exports {
                         >::ALIGN32
                     );
                 };
+                #[derive(wasmtime::component::ComponentType)]
+                #[derive(wasmtime::component::Lift)]
+                #[derive(wasmtime::component::Lower)]
+                #[component(record)]
+                pub struct FuturesAndStreams {
+                    #[component(name = "a")]
+                    pub a: wasmtime::component::FutureReader<u8>,
+                    #[component(name = "b")]
+                    pub b: wasmtime::component::StreamReader<u8>,
+                    #[component(name = "c")]
+                    pub c: wasmtime::component::StreamReader<
+                        wasmtime::component::FutureReader<
+                            wasmtime::component::StreamReader<()>,
+                        >,
+                    >,
+                    #[component(name = "d")]
+                    pub d: wasmtime::component::FutureReader<
+                        wasmtime::component::StreamReader<
+                            wasmtime::component::FutureReader<()>,
+                        >,
+                    >,
+                }
+                impl core::fmt::Debug for FuturesAndStreams {
+                    fn fmt(
+                        &self,
+                        f: &mut core::fmt::Formatter<'_>,
+                    ) -> core::fmt::Result {
+                        f.debug_struct("FuturesAndStreams")
+                            .field("a", &self.a)
+                            .field("b", &self.b)
+                            .field("c", &self.c)
+                            .field("d", &self.d)
+                            .finish()
+                    }
+                }
+                const _: () = {
+                    assert!(
+                        16 == < FuturesAndStreams as wasmtime::component::ComponentType
+                        >::SIZE32
+                    );
+                    assert!(
+                        4 == < FuturesAndStreams as wasmtime::component::ComponentType
+                        >::ALIGN32
+                    );
+                };
                 #[derive(Clone)]
                 pub struct Guest {
                     tuple_arg: wasmtime::component::Func,
@@ -895,7 +982,6 @@ pub mod exports {
                             >::new_unchecked(self.tuple_arg)
                         };
                         let () = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(())
                     }
                     pub fn call_tuple_result<S: wasmtime::AsContextMut>(
@@ -909,7 +995,6 @@ pub mod exports {
                             >::new_unchecked(self.tuple_result)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_empty_arg<S: wasmtime::AsContextMut>(
@@ -924,7 +1009,6 @@ pub mod exports {
                             >::new_unchecked(self.empty_arg)
                         };
                         let () = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(())
                     }
                     pub fn call_empty_result<S: wasmtime::AsContextMut>(
@@ -938,7 +1022,6 @@ pub mod exports {
                             >::new_unchecked(self.empty_result)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_scalar_arg<S: wasmtime::AsContextMut>(
@@ -953,7 +1036,6 @@ pub mod exports {
                             >::new_unchecked(self.scalar_arg)
                         };
                         let () = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(())
                     }
                     pub fn call_scalar_result<S: wasmtime::AsContextMut>(
@@ -967,7 +1049,6 @@ pub mod exports {
                             >::new_unchecked(self.scalar_result)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_flags_arg<S: wasmtime::AsContextMut>(
@@ -982,7 +1063,6 @@ pub mod exports {
                             >::new_unchecked(self.flags_arg)
                         };
                         let () = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(())
                     }
                     pub fn call_flags_result<S: wasmtime::AsContextMut>(
@@ -996,7 +1076,6 @@ pub mod exports {
                             >::new_unchecked(self.flags_result)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_aggregate_arg<S: wasmtime::AsContextMut>(
@@ -1011,7 +1090,6 @@ pub mod exports {
                             >::new_unchecked(self.aggregate_arg)
                         };
                         let () = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(())
                     }
                     pub fn call_aggregate_result<S: wasmtime::AsContextMut>(
@@ -1025,7 +1103,6 @@ pub mod exports {
                             >::new_unchecked(self.aggregate_result)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_typedef_inout<S: wasmtime::AsContextMut>(
@@ -1040,7 +1117,6 @@ pub mod exports {
                             >::new_unchecked(self.typedef_inout)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                 }

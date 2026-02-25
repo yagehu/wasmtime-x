@@ -9,9 +9,7 @@ use wasmtime_wasi::p2::bindings::Command;
 async fn run(path: &str, inherit_stdio: bool) -> Result<()> {
     let path = Path::new(path);
     let name = path.file_stem().unwrap().to_str().unwrap();
-    let engine = test_programs_artifacts::engine(|config| {
-        config.async_support(true);
-    });
+    let engine = test_programs_artifacts::engine(|_config| {});
     let mut linker = Linker::new(&engine);
     add_to_linker_async(&mut linker)?;
 
@@ -19,10 +17,7 @@ async fn run(path: &str, inherit_stdio: bool) -> Result<()> {
         if inherit_stdio {
             builder.inherit_stdio();
         }
-        MyWasiCtx {
-            wasi: builder.build(),
-            table: Default::default(),
-        }
+        MyWasiCtx::new(builder.build())
     })?;
     let component = Component::from_file(&engine, path)?;
     let command = Command::instantiate_async(&mut store, &component, &linker).await?;
@@ -262,6 +257,12 @@ async fn p1_file_write() {
 async fn p1_path_open_lots() {
     run(P1_PATH_OPEN_LOTS_COMPONENT, false).await.unwrap()
 }
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p1_sleep_quickly_but_lots() {
+    run(P1_SLEEP_QUICKLY_BUT_LOTS_COMPONENT, false)
+        .await
+        .unwrap()
+}
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn p2_sleep() {
@@ -363,8 +364,13 @@ async fn p2_adapter_badfd() {
 async fn p2_file_read_write() {
     run(P2_FILE_READ_WRITE_COMPONENT, false).await.unwrap()
 }
-#[expect(
-    dead_code,
-    reason = "tested in the wasi-cli crate, satisfying foreach_api! macro"
-)]
-fn p1_cli_much_stdout() {}
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p2_udp_send_too_much() {
+    let e = run(P2_UDP_SEND_TOO_MUCH_COMPONENT, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        format!("{}", e.source().expect("trap source")),
+        "unpermitted: argument exceeds permitted size"
+    )
+}

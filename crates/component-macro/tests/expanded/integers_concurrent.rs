@@ -192,39 +192,39 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::Box;
             pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn a1<T>(
+                fn a1<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: u8,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a2<T>(
+                fn a2<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: i8,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a3<T>(
+                fn a3<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: u16,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a4<T>(
+                fn a4<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: i16,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a5<T>(
+                fn a5<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: u32,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a6<T>(
+                fn a6<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: i32,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a7<T>(
+                fn a7<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: u64,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a8<T>(
+                fn a8<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: i64,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn a9<T>(
+                fn a9<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     p1: u8,
                     p2: i8,
@@ -235,31 +235,31 @@ pub mod foo {
                     p7: u64,
                     p8: i64,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn r1<T>(
+                fn r1<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = u8> + Send;
-                fn r2<T>(
+                fn r2<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = i8> + Send;
-                fn r3<T>(
+                fn r3<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = u16> + Send;
-                fn r4<T>(
+                fn r4<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = i16> + Send;
-                fn r5<T>(
+                fn r5<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = u32> + Send;
-                fn r6<T>(
+                fn r6<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = i32> + Send;
-                fn r7<T>(
+                fn r7<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = u64> + Send;
-                fn r8<T>(
+                fn r8<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = i64> + Send;
-                fn pair_ret<T>(
+                fn pair_ret<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = (i64, u8)> + Send;
             }
@@ -709,7 +709,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a1)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a2<_T, _D>(
@@ -727,7 +727,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a2)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a3<_T, _D>(
@@ -745,7 +745,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a3)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a4<_T, _D>(
@@ -763,7 +763,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a4)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a5<_T, _D>(
@@ -781,7 +781,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a5)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a6<_T, _D>(
@@ -799,7 +799,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a6)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a7<_T, _D>(
@@ -817,7 +817,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a7)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a8<_T, _D>(
@@ -835,7 +835,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a8)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_a9<_T, _D>(
@@ -860,7 +860,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.a9)
                         };
-                        let ((), _) = callee
+                        let () = callee
                             .call_concurrent(
                                 accessor,
                                 (arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7),
@@ -882,7 +882,7 @@ pub mod exports {
                                 (u8,),
                             >::new_unchecked(self.r1)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r2<_T, _D>(
@@ -899,7 +899,7 @@ pub mod exports {
                                 (i8,),
                             >::new_unchecked(self.r2)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r3<_T, _D>(
@@ -916,7 +916,7 @@ pub mod exports {
                                 (u16,),
                             >::new_unchecked(self.r3)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r4<_T, _D>(
@@ -933,7 +933,7 @@ pub mod exports {
                                 (i16,),
                             >::new_unchecked(self.r4)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r5<_T, _D>(
@@ -950,7 +950,7 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.r5)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r6<_T, _D>(
@@ -967,7 +967,7 @@ pub mod exports {
                                 (i32,),
                             >::new_unchecked(self.r6)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r7<_T, _D>(
@@ -984,7 +984,7 @@ pub mod exports {
                                 (u64,),
                             >::new_unchecked(self.r7)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_r8<_T, _D>(
@@ -1001,7 +1001,7 @@ pub mod exports {
                                 (i64,),
                             >::new_unchecked(self.r8)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_pair_ret<_T, _D>(
@@ -1018,7 +1018,7 @@ pub mod exports {
                                 ((i64, u8),),
                             >::new_unchecked(self.pair_ret)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                 }

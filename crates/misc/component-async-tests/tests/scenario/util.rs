@@ -5,13 +5,13 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Once};
 use std::time::Duration;
 
-use component_async_tests::{Ctx, sleep};
+use component_async_tests::{Ctx, yield_};
 use futures::stream::{FuturesUnordered, TryStreamExt};
 use tokio::fs;
 use tokio::sync::Mutex;
 use wasm_compose::composer::ComponentComposer;
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Result, Store, bail, format_err};
+use wasmtime::{Config, Engine, Result, Store, ToWasmtimeResult as _, bail, format_err};
 use wasmtime_wasi::WasiCtxBuilder;
 
 pub fn init_logger() {
@@ -38,7 +38,6 @@ pub fn config() -> Config {
     config.wasm_component_model_async_stackful(true);
     config.wasm_component_model_threading(true);
     config.wasm_component_model_error_context(true);
-    config.async_support(true);
     config
 }
 
@@ -63,6 +62,7 @@ async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
         },
     )
     .compose()
+    .to_wasmtime_result()
 }
 
 pub async fn make_component(engine: &Engine, components: &[&str]) -> Result<Component> {
@@ -183,11 +183,11 @@ pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()
     let mut linker = Linker::new(&engine);
 
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    component_async_tests::yield_host::bindings::local::local::continue_::add_to_linker::<_, Ctx>(
+    component_async_tests::yield_runner::bindings::local::local::continue_::add_to_linker::<_, Ctx>(
         &mut linker,
         |ctx| ctx,
     )?;
-    component_async_tests::yield_host::bindings::local::local::ready::add_to_linker::<_, Ctx>(
+    component_async_tests::yield_runner::bindings::local::local::ready::add_to_linker::<_, Ctx>(
         &mut linker,
         |ctx| ctx,
     )?;
@@ -195,7 +195,7 @@ pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()
         _,
         Ctx,
     >(&mut linker, |ctx| ctx)?;
-    sleep::local::local::sleep::add_to_linker::<_, Ctx>(&mut linker, |ctx| ctx)?;
+    yield_::local::local::yield_::add_to_linker::<_, Ctx>(&mut linker, |ctx| ctx)?;
 
     let mut store = Store::new(
         &engine,
@@ -203,7 +203,6 @@ pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
-            wakers: Arc::new(std::sync::Mutex::new(None)),
         },
     );
 
@@ -216,17 +215,18 @@ pub async fn test_run_with_count(components: &[&str], count: usize) -> Result<()
         });
     }
 
-    let yield_host = component_async_tests::yield_host::bindings::YieldHost::instantiate_async(
-        &mut store, &component, &linker,
-    )
-    .await?;
+    let yield_runner =
+        component_async_tests::yield_runner::bindings::YieldRunner::instantiate_async(
+            &mut store, &component, &linker,
+        )
+        .await?;
 
     // Start `count` concurrent calls and then join them all:
     store
         .run_concurrent(async |store| {
             let mut futures = FuturesUnordered::new();
             for _ in 0..count {
-                futures.push(yield_host.local_local_run().call_run(store));
+                futures.push(yield_runner.local_local_run().call_run(store));
             }
 
             while let Some(()) = futures.try_next().await? {

@@ -9,15 +9,17 @@ use http_body::Body;
 use http_body_util::{BodyExt as _, Collected, Empty, combinators::UnsyncBoxBody};
 use std::io::Write;
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use test_programs_artifacts::*;
 use tokio::{fs, try_join};
 use wasm_compose::composer::ComponentComposer;
 use wasm_compose::config::{Config, Dependency, Instantiation, InstantiationArg};
 use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Result, Store, error::Context as _, format_err};
+use wasmtime::{Result, Store, ToWasmtimeResult as _, error::Context as _, format_err};
 use wasmtime_wasi::p3::bindings::Command;
 use wasmtime_wasi::{TrappableError, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
-use wasmtime_wasi_http::p3::bindings::Proxy;
+use wasmtime_wasi_http::p3::bindings::Service;
 use wasmtime_wasi_http::p3::bindings::http::types::ErrorCode;
 use wasmtime_wasi_http::p3::{
     self, Request, RequestOptions, WasiHttpCtx, WasiHttpCtxView, WasiHttpView,
@@ -117,7 +119,6 @@ impl WasiHttpView for Ctx {
 async fn run_cli(path: &str, server: &Server) -> wasmtime::Result<()> {
     let engine = test_programs_artifacts::engine(|config| {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
-        config.async_support(true);
         config.wasm_component_model_async(true);
     });
     let component = Component::from_file(&engine, path)?;
@@ -142,7 +143,6 @@ async fn run_cli(path: &str, server: &Server) -> wasmtime::Result<()> {
         .await
         .context("failed to call `wasi:cli/run#run`")?
         .context("guest trapped")?
-        .0
         .map_err(|()| format_err!("`wasi:cli/run#run` failed"))
 }
 
@@ -153,7 +153,6 @@ async fn run_http<E: Into<ErrorCode> + 'static>(
 ) -> wasmtime::Result<Result<http::Response<Collected<Bytes>>, Option<ErrorCode>>> {
     let engine = test_programs_artifacts::engine(|config| {
         config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
-        config.async_support(true);
         config.wasm_component_model_async(true);
     });
     let component = Component::from_file(&engine, component_filename)?;
@@ -166,38 +165,26 @@ async fn run_http<E: Into<ErrorCode> + 'static>(
     wasmtime_wasi::p3::add_to_linker(&mut linker).context("failed to link `wasi:cli@0.3.x`")?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)
         .context("failed to link `wasi:http@0.3.x`")?;
-    let proxy = Proxy::instantiate_async(&mut store, &component, &linker).await?;
+    let service = Service::instantiate_async(&mut store, &component, &linker).await?;
     let (req, io) = Request::from_http(req);
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let ((handle_result, ()), res) = try_join!(
-        async move {
-            store
-                .run_concurrent(async |store| {
-                    try_join!(
-                        async {
-                            let (res, task) = match proxy.handle(store, req).await? {
-                                Ok(pair) => pair,
-                                Err(err) => return Ok(Err(Some(err))),
-                            };
-                            _ = tx
-                                .send(store.with(|store| res.into_http(store, async { Ok(()) }))?);
-                            task.block(store).await;
-                            Ok(Ok(()))
-                        },
-                        async { io.await.context("failed to consume request body") }
-                    )
-                })
-                .await?
-        },
-        async move {
-            let res = rx.await?;
-            let (parts, body) = res.into_parts();
-            let body = body.collect().await.context("failed to collect body")?;
-            wasmtime::error::Ok(http::Response::from_parts(parts, body))
-        }
-    )?;
-
-    Ok(handle_result.map(|()| res))
+    store
+        .run_concurrent(async |store| {
+            let (res, ()) = try_join!(
+                async {
+                    let res = match service.handle(store, req).await? {
+                        Ok(res) => res,
+                        Err(err) => return Ok(Err(Some(err))),
+                    };
+                    let res = store.with(|store| res.into_http(store, async { Ok(()) }))?;
+                    let (parts, body) = res.into_parts();
+                    let body = body.collect().await.context("failed to collect body")?;
+                    wasmtime::error::Ok(Ok(http::Response::from_parts(parts, body)))
+                },
+                async { io.await.context("failed to consume request body") }
+            )?;
+            Ok(res)
+        })
+        .await?
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -359,6 +346,8 @@ async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
     let b_file = dir.path().join("b.wasm");
     fs::write(&b_file, b).await?;
 
+    // The middleware imports `wasi:http/handler` which matches the echo's
+    // `wasi:http/handler` export, so wasm-compose can link them automatically.
     ComponentComposer::new(
         &a_file,
         &wasm_compose::config::Config {
@@ -368,6 +357,7 @@ async fn compose(a: &[u8], b: &[u8]) -> Result<Vec<u8>> {
         },
     )
     .compose()
+    .to_wasmtime_result()
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -411,7 +401,7 @@ async fn test_http_middleware_with_chain(host_to_host: bool) -> Result<()> {
                         "local:local/chain-http".to_owned(),
                         InstantiationArg {
                             instance: "local:local/chain-http".into(),
-                            export: Some("wasi:http/handler@0.3.0-rc-2025-09-16".into()),
+                            export: Some("wasi:http/handler@0.3.0-rc-2026-02-09".into()),
                         },
                     )]
                     .into_iter()
@@ -422,7 +412,8 @@ async fn test_http_middleware_with_chain(host_to_host: bool) -> Result<()> {
             .collect(),
         },
     )
-    .compose()?;
+    .compose()
+    .to_wasmtime_result()?;
     fs::write(&path, &bytes).await?;
 
     test_http_echo(&path.to_str().unwrap(), true, host_to_host).await
@@ -587,5 +578,152 @@ async fn p3_http_proxy() -> Result<()> {
     );
 
     assert_eq!(request_body, body.as_slice());
+    Ok(())
+}
+
+// Custom body wrapper that sends a configurable frame at EOS while reporting is_end_stream() = true
+struct BodyWithFrameAtEos {
+    inner: http_body_util::StreamBody<
+        futures::channel::mpsc::Receiver<Result<http_body::Frame<Bytes>, ErrorCode>>,
+    >,
+    final_frame: Option<Bytes>,
+    sent_final: bool,
+    at_eos: bool,
+}
+
+impl http_body::Body for BodyWithFrameAtEos {
+    type Data = Bytes;
+    type Error = ErrorCode;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        // First, poll the underlying body
+        let this = &mut *self;
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(None) if !this.sent_final => {
+                // When the underlying body ends, send the configured final frame
+                // This simulates HTTP implementations that send frames at EOS
+                this.sent_final = true;
+                this.at_eos = true;
+                if let Some(data) = this.final_frame.take() {
+                    Poll::Ready(Some(Ok(http_body::Frame::data(data))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        // Report end of stream once we've reached it
+        // This ensures is_end_stream() = true when we send the final frame
+        self.at_eos
+    }
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_http_empty_frame_at_end_of_stream() -> Result<()> {
+    _ = env_logger::try_init();
+
+    // This test verifies the fix which handles the case where a zero-length frame is
+    // received when is_end_stream() is true. Without the fix, the StreamProducer would
+    // crash when the WASM guest tries to read such a frame.
+
+    let body = b"test";
+    let raw_body = Bytes::copy_from_slice(body);
+
+    let (mut body_tx, body_rx) = futures::channel::mpsc::channel::<Result<_, ErrorCode>>(1);
+
+    let wrapped_body = BodyWithFrameAtEos {
+        inner: http_body_util::StreamBody::new(body_rx),
+        final_frame: Some(Bytes::new()), // Send empty frame at EOS
+        sent_final: false,
+        at_eos: false,
+    };
+
+    let request = http::Request::builder()
+        .uri("http://localhost/")
+        .method(http::Method::GET);
+
+    // Use the echo component which actually reads from the stream
+    let response = futures::join!(
+        run_http(
+            P3_HTTP_ECHO_COMPONENT,
+            request.body(wrapped_body)?,
+            oneshot::channel().0
+        ),
+        async {
+            body_tx
+                .send(Ok(http_body::Frame::data(raw_body)))
+                .await
+                .unwrap();
+            drop(body_tx);
+        }
+    )
+    .0?
+    .unwrap();
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify the body was echoed correctly (empty frames should be filtered out by the fix)
+    let (_, collected_body) = response.into_parts();
+    let collected_body = collected_body.to_bytes();
+    assert_eq!(collected_body, body.as_slice());
+    Ok(())
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn p3_http_data_frame_at_end_of_stream() -> Result<()> {
+    _ = env_logger::try_init();
+
+    // This test verifies that when is_end_stream() is true but the frame contains data,
+    // we still process the data.
+
+    let body = b"test";
+    let final_data = b" final";
+    let raw_body = Bytes::copy_from_slice(body);
+    let final_frame = Bytes::copy_from_slice(final_data);
+
+    let (mut body_tx, body_rx) = futures::channel::mpsc::channel::<Result<_, ErrorCode>>(1);
+
+    let wrapped_body = BodyWithFrameAtEos {
+        inner: http_body_util::StreamBody::new(body_rx),
+        final_frame: Some(final_frame), // Send data frame at EOS with is_end_stream() = true
+        sent_final: false,
+        at_eos: false,
+    };
+
+    let request = http::Request::builder()
+        .uri("http://localhost/")
+        .method(http::Method::GET);
+
+    // Use the echo component which actually reads from the stream
+    let response = futures::join!(
+        run_http(
+            P3_HTTP_ECHO_COMPONENT,
+            request.body(wrapped_body)?,
+            oneshot::channel().0
+        ),
+        async {
+            body_tx
+                .send(Ok(http_body::Frame::data(raw_body)))
+                .await
+                .unwrap();
+            drop(body_tx);
+        }
+    )
+    .0?
+    .unwrap();
+
+    assert_eq!(response.status().as_u16(), 200);
+
+    // Verify the body was echoed correctly (the final frame's data should not be lost)
+    let (_, collected_body) = response.into_parts();
+    let collected_body = collected_body.to_bytes();
+    let expected = [body.as_slice(), final_data.as_slice()].concat();
+    assert_eq!(collected_body, expected.as_slice());
     Ok(())
 }

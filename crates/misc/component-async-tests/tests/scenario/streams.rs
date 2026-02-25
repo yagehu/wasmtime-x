@@ -2,7 +2,7 @@ use {
     super::util::{config, make_component},
     component_async_tests::{
         Ctx, closed_streams,
-        util::{OneshotConsumer, OneshotProducer, PipeConsumer, PipeProducer},
+        util::{OneshotConsumer, OneshotProducer, PipeConsumer, PipeProducer, yield_times},
     },
     futures::{
         FutureExt, Sink, SinkExt, Stream, StreamExt,
@@ -15,7 +15,6 @@ use {
         pin::Pin,
         sync::{Arc, Mutex},
         task::{self, Context, Poll},
-        time::Duration,
     },
     wasmtime::{
         Engine, Result, Store, StoreContextMut,
@@ -119,7 +118,6 @@ pub async fn async_closed_streams() -> Result<()> {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
-            wakers: Arc::new(Mutex::new(None)),
         },
     );
 
@@ -280,7 +278,6 @@ pub async fn async_closed_stream() -> Result<()> {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
-            wakers: Arc::new(Mutex::new(None)),
         },
     );
 
@@ -301,15 +298,15 @@ pub async fn async_closed_stream() -> Result<()> {
 
 struct VecProducer<T> {
     source: Vec<T>,
-    sleep: Pin<Box<dyn Future<Output = ()> + Send>>,
+    maybe_yield: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl<T> VecProducer<T> {
     fn new(source: Vec<T>, delay: bool) -> Self {
         Self {
             source,
-            sleep: if delay {
-                tokio::time::sleep(Duration::from_millis(10)).boxed()
+            maybe_yield: if delay {
+                yield_times(5).boxed()
             } else {
                 async {}.boxed()
             },
@@ -328,9 +325,9 @@ impl<D, T: Lift + Unpin + 'static> StreamProducer<D> for VecProducer<T> {
         mut destination: Destination<Self::Item, Self::Buffer>,
         _: bool,
     ) -> Poll<Result<StreamResult>> {
-        let sleep = &mut self.as_mut().get_mut().sleep;
-        task::ready!(sleep.as_mut().poll(cx));
-        *sleep = async {}.boxed();
+        let maybe_yield = &mut self.as_mut().get_mut().maybe_yield;
+        task::ready!(maybe_yield.as_mut().poll(cx));
+        *maybe_yield = async {}.boxed();
 
         destination.set_buffer(mem::take(&mut self.get_mut().source).into());
         Poll::Ready(Ok(StreamResult::Dropped))
@@ -339,15 +336,15 @@ impl<D, T: Lift + Unpin + 'static> StreamProducer<D> for VecProducer<T> {
 
 struct OneAtATime<T> {
     destination: Arc<Mutex<Vec<T>>>,
-    sleep: Pin<Box<dyn Future<Output = ()> + Send>>,
+    maybe_yield: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl<T> OneAtATime<T> {
     fn new(destination: Arc<Mutex<Vec<T>>>, delay: bool) -> Self {
         Self {
             destination,
-            sleep: if delay {
-                tokio::time::sleep(Duration::from_millis(10)).boxed()
+            maybe_yield: if delay {
+                yield_times(5).boxed()
             } else {
                 async {}.boxed()
             },
@@ -365,9 +362,9 @@ impl<D, T: Lift + 'static> StreamConsumer<D> for OneAtATime<T> {
         mut source: Source<Self::Item>,
         _: bool,
     ) -> Poll<Result<StreamResult>> {
-        let sleep = &mut self.as_mut().get_mut().sleep;
-        task::ready!(sleep.as_mut().poll(cx));
-        *sleep = async {}.boxed();
+        let maybe_yield = &mut self.as_mut().get_mut().maybe_yield;
+        task::ready!(maybe_yield.as_mut().poll(cx));
+        *maybe_yield = async {}.boxed();
 
         let value = &mut None;
         source.read(store, value)?;
@@ -380,7 +377,7 @@ mod short_reads {
     wasmtime::component::bindgen!({
         path: "wit",
         world: "short-reads-guest",
-        exports: { default: async | task_exit },
+        exports: { default: async },
     });
 }
 
@@ -415,7 +412,6 @@ async fn test_async_short_reads(delay: bool) -> Result<()> {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::default(),
             continue_: false,
-            wakers: Arc::new(Mutex::new(None)),
         },
     );
 
@@ -435,7 +431,7 @@ async fn test_async_short_reads(delay: bool) -> Result<()> {
             let stream =
                 store.with(|store| StreamReader::new(store, VecProducer::new(things, delay)));
 
-            let (stream, task) = guest
+            let stream = guest
                 .local_local_short_reads()
                 .call_short_reads(store, stream)
                 .await?;
@@ -445,14 +441,18 @@ async fn test_async_short_reads(delay: bool) -> Result<()> {
             // re-take ownership of any unwritten items.
             store.with(|store| stream.pipe(store, OneAtATime::new(received_things.clone(), delay)));
 
-            task.block(store).await;
-
-            assert_eq!(count, received_things.lock().unwrap().len());
+            for i in 0.. {
+                assert!(i < 1000);
+                if count == received_things.lock().unwrap().len() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
 
             let mut received_strings = Vec::with_capacity(strings.len());
             let received_things = mem::take(received_things.lock().unwrap().deref_mut());
             for it in received_things {
-                received_strings.push(thing.call_get(store, it).await?.0);
+                received_strings.push(thing.call_get(store, it).await?);
             }
 
             assert_eq!(

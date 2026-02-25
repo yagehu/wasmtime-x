@@ -292,11 +292,13 @@ const _: () = {
                     wasmtime::component::ResourceType::host::<WorldResource>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostWorldResource::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostWorldResource::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -459,7 +461,6 @@ const _: () = {
                 .call_async(store.as_context_mut(), ())
                 .instrument(span.clone())
                 .await?;
-            callee.post_return_async(store.as_context_mut()).instrument(span).await?;
             Ok(ret0)
         }
         pub fn foo_foo_uses_resource_transitively(
@@ -853,11 +854,13 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<Bar>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostBar::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostBar::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -866,11 +869,13 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<Fallible>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostFallible::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostFallible::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -1548,11 +1553,13 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<A>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostA::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostA::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -1718,11 +1725,13 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<Foo>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostFoo::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostFoo::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -1822,10 +1831,6 @@ pub mod exports {
                         let () = callee
                             .call_async(store.as_context_mut(), (arg0,))
                             .instrument(span.clone())
-                            .await?;
-                        callee
-                            .post_return_async(store.as_context_mut())
-                            .instrument(span)
                             .await?;
                         Ok(())
                     }

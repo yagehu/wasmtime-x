@@ -5,6 +5,9 @@ use wasmtime::component::{
 };
 use wasmtime::{Result, Store, error::Context as _, format_err};
 
+#[cfg(feature = "wasmprinter")]
+use wasmtime::ToWasmtimeResult as _;
+
 impl Wizer {
     /// Same as [`Wizer::run`], except for components.
     pub async fn run_component<T: Send>(
@@ -18,7 +21,7 @@ impl Wizer {
         #[cfg(feature = "wasmprinter")]
         log::debug!(
             "instrumented wasm: {}",
-            wasmprinter::print_bytes(&instrumented_wasm)?,
+            wasmprinter::print_bytes(&instrumented_wasm).to_wasmtime_result()?,
         );
 
         let engine = store.engine();
@@ -67,16 +70,12 @@ impl Wizer {
             .call_async(&mut *store, ())
             .await
             .with_context(|| format!("the initialization function trapped"))?;
-        init_func
-            .post_return_async(&mut *store)
-            .await
-            .context("failed to call post-return")?;
 
         Ok(())
     }
 }
 
-/// Impementation of [`InstanceState`] backed by Wasmtime.
+/// Impementation of [`ComponentInstanceState`] backed by Wasmtime.
 pub struct WasmtimeWizerComponent<'a, T: 'static> {
     /// The Wasmtime-based store that owns the `instance` field.
     pub store: &'a mut Store<T>,
@@ -108,9 +107,7 @@ impl<T: Send> WasmtimeWizerComponent<'_, T> {
             .get_typed_func::<(), (R,)>(&mut *self.store, func_export)
             .unwrap();
         let ret = func.call_async(&mut *self.store, ()).await.unwrap().0;
-        let ret = use_ret(&mut *self.store, ret);
-        func.post_return_async(&mut *self.store).await.unwrap();
-        ret
+        use_ret(&mut *self.store, ret)
     }
 }
 

@@ -130,7 +130,6 @@ impl RunCommand {
     /// Creates a new `Engine` with the configuration for this command.
     pub fn new_engine(&mut self) -> Result<Engine> {
         let mut config = self.run.common.config(None)?;
-        config.async_support(true);
 
         if self.run.common.wasm.timeout.is_some() {
             config.epoch_interruption(true);
@@ -256,11 +255,13 @@ impl RunCommand {
                         linker
                             .module_async(&mut *store, name, &preload_module)
                             .await
-                            .context(format!(
-                                "failed to process preload `{}` at `{}`",
-                                name,
-                                path.display()
-                            ))?;
+                            .with_context(|| {
+                                format!(
+                                    "failed to process preload `{}` at `{}`",
+                                    name,
+                                    path.display()
+                                )
+                            })?;
                     }
                     #[cfg(not(feature = "cranelift"))]
                     CliLinker::Core(_) => {
@@ -513,10 +514,9 @@ impl RunCommand {
                 let instance = linker
                     .instantiate_async(&mut *store, &module)
                     .await
-                    .context(format!(
-                        "failed to instantiate {:?}",
-                        self.module_and_args[0]
-                    ))?;
+                    .with_context(|| {
+                        format!("failed to instantiate {:?}", self.module_and_args[0])
+                    })?;
 
                 // If `_initialize` is present, meaning a reactor, then invoke
                 // the function.
@@ -618,26 +618,31 @@ impl RunCommand {
             .expect("found export index");
 
         let mut results = vec![Val::Bool(false); func_type.results().len()];
-
-        #[cfg(feature = "component-model-async")]
-        {
-            store
-                .run_concurrent(async |store| {
-                    let task = func.call_concurrent(store, &params, &mut results).await?;
-                    task.block(store).await;
-                    wasmtime::error::Ok(())
-                })
-                .await??;
-        }
-        #[cfg(not(feature = "component-model-async"))]
-        {
-            func.call_async(&mut *store, &params, &mut results).await?;
-            func.post_return_async(&mut *store).await?;
-        }
+        self.call_component_func(store, &params, func, &mut results)
+            .await?;
 
         println!("{}", DisplayFuncResults(&results));
-
         Ok(instance)
+    }
+
+    #[cfg(feature = "component-model")]
+    async fn call_component_func(
+        &self,
+        store: &mut Store<Host>,
+        params: &[wasmtime::component::Val],
+        func: wasmtime::component::Func,
+        results: &mut Vec<wasmtime::component::Val>,
+    ) -> Result<(), Error> {
+        #[cfg(feature = "component-model-async")]
+        if self.run.common.wasm.concurrency_support.unwrap_or(true) {
+            store
+                .run_concurrent(async |store| func.call_concurrent(store, params, results).await)
+                .await??;
+            return Ok(());
+        }
+
+        func.call_async(&mut *store, &params, results).await?;
+        Ok(())
     }
 
     /// Execute the default behavior for components on the CLI, looking for
@@ -661,11 +666,7 @@ impl RunCommand {
             if let Ok(command) = wasmtime_wasi::p3::bindings::Command::new(&mut *store, &instance) {
                 result = Some(
                     store
-                        .run_concurrent(async |store| {
-                            let (result, task) = command.wasi_cli_run().call_run(store).await?;
-                            task.block(store).await;
-                            Ok(result)
-                        })
+                        .run_concurrent(async |store| command.wasi_cli_run().call_run(store).await)
                         .await?,
                 );
             }
@@ -1040,6 +1041,7 @@ impl RunCommand {
                 store.data_mut().wasi_threads = Some(Arc::new(WasiThreadsCtx::new(
                     module.clone(),
                     Arc::new(linker.clone()),
+                    true,
                 )?));
             }
         }
@@ -1063,8 +1065,8 @@ impl RunCommand {
                         }
                     }
                 }
-
-                store.data_mut().wasi_http = Some(Arc::new(WasiHttpCtx::new()));
+                let http = self.run.wasi_http_ctx()?;
+                store.data_mut().wasi_http = Some(Arc::new(http));
             }
         }
 
@@ -1159,7 +1161,13 @@ impl RunCommand {
         let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
         builder.inherit_stdio().args(&self.compute_argv()?);
         self.run.configure_wasip2(&mut builder)?;
-        let ctx = builder.build_p1();
+        let mut ctx = builder.build_p1();
+        if let Some(max) = self.run.common.wasi.max_resources {
+            ctx.ctx().table.set_max_capacity(max);
+        }
+        if let Some(fuel) = self.run.common.wasi.hostcall_fuel {
+            store.set_hostcall_fuel(fuel);
+        }
         store.data_mut().wasip1_ctx = Some(Arc::new(Mutex::new(ctx)));
 
         let mut builder = wasmtime_wasi::WasiCtxBuilder::new();
@@ -1349,7 +1357,7 @@ fn write_core_dump(
     let core_dump = core_dump.serialize(store, name);
 
     let mut core_dump_file =
-        File::create(path).context(format!("failed to create file at `{path}`"))?;
+        File::create(path).with_context(|| format!("failed to create file at `{path}`"))?;
     core_dump_file
         .write_all(&core_dump)
         .with_context(|| format!("failed to write core dump file at `{path}`"))?;

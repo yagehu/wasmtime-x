@@ -192,18 +192,18 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::Box;
             pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn f32_param<T>(
+                fn f32_param<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: f32,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn f64_param<T>(
+                fn f64_param<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: f64,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn f32_result<T>(
+                fn f32_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = f32> + Send;
-                fn f64_result<T>(
+                fn f64_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = f64> + Send;
             }
@@ -372,7 +372,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f32_param)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_f64_param<_T, _D>(
@@ -390,7 +390,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f64_param)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_f32_result<_T, _D>(
@@ -407,7 +407,7 @@ pub mod exports {
                                 (f32,),
                             >::new_unchecked(self.f32_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_f64_result<_T, _D>(
@@ -424,7 +424,7 @@ pub mod exports {
                                 (f64,),
                             >::new_unchecked(self.f64_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                 }

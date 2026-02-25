@@ -1,5 +1,5 @@
 use wasmtime::component::{Component, Instance, Linker, Val};
-use wasmtime::{Config, Engine, Result, Store, bail, error::Context as _};
+use wasmtime::{Engine, Result, Store, ToWasmtimeResult as _, bail, error::Context as _};
 use wasmtime_wizer::Wizer;
 
 fn fail_wizening(msg: &str, wasm: &[u8]) -> Result<()> {
@@ -8,7 +8,7 @@ fn fail_wizening(msg: &str, wasm: &[u8]) -> Result<()> {
     let wasm = wat::parse_bytes(wasm)?;
     log::debug!(
         "testing wizening failure for wasm:\n{}",
-        wasmprinter::print_bytes(&wasm)?
+        wasmprinter::print_bytes(&wasm).to_wasmtime_result()?
     );
     match Wizer::new().instrument_component(&wasm) {
         Ok(_) => bail!("expected wizening to fail"),
@@ -120,9 +120,7 @@ fn unsupported_constructs() -> Result<()> {
 }
 
 fn store() -> Result<Store<()>> {
-    let mut config = Config::new();
-    config.async_support(true);
-    let engine = Engine::new(&config)?;
+    let engine = Engine::default();
     Ok(Store::new(&engine, ()))
 }
 
@@ -610,4 +608,43 @@ async fn export_is_removed() -> Result<()> {
             .flat_map(|section| section.into_iter().map(|e| e.unwrap().name.0))
             .collect()
     }
+}
+
+// For the time being, Wizer should _not_ remove the `_initialize` export if
+// present, even though it will become unreachable by virtual of `start`
+// functions being removed.  That's because `wit-component` creates an alias to
+// the `_initialize` function, which would require additional surgery to remove.
+// Ideally, we'd have a general purpose, component-level dead-code-elimination
+// tool to remove all unreachable code, but for now we accept a bit of
+// redundancy.
+#[tokio::test]
+async fn leave_wasip1_initialize() -> Result<()> {
+    wizen_and_run_wasm(
+        42,
+        r#"(component
+            (core module $m
+                (func (export "init"))
+
+                (func (export "run") (result i32)
+                    i32.const 42
+                )
+
+                (func (export "_initialize"))
+            )
+            (core instance $i (instantiate $m))
+            (alias core export $i "_initialize" (core func $initialize))
+            (core module $shim
+                (import "" "_initialize" (func $initialize))
+                (start $initialize)
+            )
+            (core instance $shim (instantiate $shim (with "" (instance
+                (export "_initialize" (func $initialize))
+            ))))
+            (func (export "run") (result u32) (canon lift (core func $i "run")))
+            (func (export "wizer-initialize") (canon lift (core func $i "init")))
+        )"#,
+    )
+    .await?;
+
+    Ok(())
 }

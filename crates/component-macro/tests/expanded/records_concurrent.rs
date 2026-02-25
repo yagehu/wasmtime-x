@@ -346,43 +346,85 @@ pub mod foo {
                     4 == < TupleTypedef2 as wasmtime::component::ComponentType >::ALIGN32
                 );
             };
+            #[derive(wasmtime::component::ComponentType)]
+            #[derive(wasmtime::component::Lift)]
+            #[derive(wasmtime::component::Lower)]
+            #[component(record)]
+            pub struct FuturesAndStreams {
+                #[component(name = "a")]
+                pub a: wasmtime::component::FutureReader<u8>,
+                #[component(name = "b")]
+                pub b: wasmtime::component::StreamReader<u8>,
+                #[component(name = "c")]
+                pub c: wasmtime::component::StreamReader<
+                    wasmtime::component::FutureReader<
+                        wasmtime::component::StreamReader<()>,
+                    >,
+                >,
+                #[component(name = "d")]
+                pub d: wasmtime::component::FutureReader<
+                    wasmtime::component::StreamReader<
+                        wasmtime::component::FutureReader<()>,
+                    >,
+                >,
+            }
+            impl core::fmt::Debug for FuturesAndStreams {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    f.debug_struct("FuturesAndStreams")
+                        .field("a", &self.a)
+                        .field("b", &self.b)
+                        .field("c", &self.c)
+                        .field("d", &self.d)
+                        .finish()
+                }
+            }
+            const _: () = {
+                assert!(
+                    16 == < FuturesAndStreams as wasmtime::component::ComponentType
+                    >::SIZE32
+                );
+                assert!(
+                    4 == < FuturesAndStreams as wasmtime::component::ComponentType
+                    >::ALIGN32
+                );
+            };
             pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn tuple_arg<T>(
+                fn tuple_arg<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: (char, u32),
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn tuple_result<T>(
+                fn tuple_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = (char, u32)> + Send;
-                fn empty_arg<T>(
+                fn empty_arg<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Empty,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn empty_result<T>(
+                fn empty_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = Empty> + Send;
-                fn scalar_arg<T>(
+                fn scalar_arg<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Scalars,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn scalar_result<T>(
+                fn scalar_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = Scalars> + Send;
-                fn flags_arg<T>(
+                fn flags_arg<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: ReallyFlags,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn flags_result<T>(
+                fn flags_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = ReallyFlags> + Send;
-                fn aggregate_arg<T>(
+                fn aggregate_arg<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     x: Aggregates,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn aggregate_result<T>(
+                fn aggregate_result<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = Aggregates> + Send;
-                fn typedef_inout<T>(
+                fn typedef_inout<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     e: TupleTypedef2,
                 ) -> impl ::core::future::Future<Output = i32> + Send;
@@ -722,6 +764,51 @@ pub mod exports {
                         >::ALIGN32
                     );
                 };
+                #[derive(wasmtime::component::ComponentType)]
+                #[derive(wasmtime::component::Lift)]
+                #[derive(wasmtime::component::Lower)]
+                #[component(record)]
+                pub struct FuturesAndStreams {
+                    #[component(name = "a")]
+                    pub a: wasmtime::component::FutureReader<u8>,
+                    #[component(name = "b")]
+                    pub b: wasmtime::component::StreamReader<u8>,
+                    #[component(name = "c")]
+                    pub c: wasmtime::component::StreamReader<
+                        wasmtime::component::FutureReader<
+                            wasmtime::component::StreamReader<()>,
+                        >,
+                    >,
+                    #[component(name = "d")]
+                    pub d: wasmtime::component::FutureReader<
+                        wasmtime::component::StreamReader<
+                            wasmtime::component::FutureReader<()>,
+                        >,
+                    >,
+                }
+                impl core::fmt::Debug for FuturesAndStreams {
+                    fn fmt(
+                        &self,
+                        f: &mut core::fmt::Formatter<'_>,
+                    ) -> core::fmt::Result {
+                        f.debug_struct("FuturesAndStreams")
+                            .field("a", &self.a)
+                            .field("b", &self.b)
+                            .field("c", &self.c)
+                            .field("d", &self.d)
+                            .finish()
+                    }
+                }
+                const _: () = {
+                    assert!(
+                        16 == < FuturesAndStreams as wasmtime::component::ComponentType
+                        >::SIZE32
+                    );
+                    assert!(
+                        4 == < FuturesAndStreams as wasmtime::component::ComponentType
+                        >::ALIGN32
+                    );
+                };
                 #[derive(Clone)]
                 pub struct Guest {
                     tuple_arg: wasmtime::component::Func,
@@ -909,7 +996,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.tuple_arg)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_tuple_result<_T, _D>(
@@ -926,7 +1013,7 @@ pub mod exports {
                                 ((char, u32),),
                             >::new_unchecked(self.tuple_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_empty_arg<_T, _D>(
@@ -944,7 +1031,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.empty_arg)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_empty_result<_T, _D>(
@@ -961,7 +1048,7 @@ pub mod exports {
                                 (Empty,),
                             >::new_unchecked(self.empty_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_scalar_arg<_T, _D>(
@@ -979,7 +1066,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.scalar_arg)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_scalar_result<_T, _D>(
@@ -996,7 +1083,7 @@ pub mod exports {
                                 (Scalars,),
                             >::new_unchecked(self.scalar_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_flags_arg<_T, _D>(
@@ -1014,7 +1101,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.flags_arg)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_flags_result<_T, _D>(
@@ -1031,7 +1118,7 @@ pub mod exports {
                                 (ReallyFlags,),
                             >::new_unchecked(self.flags_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_aggregate_arg<_T, _D>(
@@ -1049,7 +1136,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.aggregate_arg)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_aggregate_result<_T, _D>(
@@ -1066,7 +1153,7 @@ pub mod exports {
                                 (Aggregates,),
                             >::new_unchecked(self.aggregate_result)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_typedef_inout<_T, _D>(
@@ -1084,9 +1171,7 @@ pub mod exports {
                                 (i32,),
                             >::new_unchecked(self.typedef_inout)
                         };
-                        let ((ret0,), _) = callee
-                            .call_concurrent(accessor, (arg0,))
-                            .await?;
+                        let (ret0,) = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(ret0)
                     }
                 }

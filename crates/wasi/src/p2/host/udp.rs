@@ -1,6 +1,6 @@
 use crate::p2::bindings::sockets::network::{ErrorCode, IpAddressFamily, IpSocketAddress, Network};
 use crate::p2::bindings::sockets::udp;
-use crate::p2::udp::{IncomingDatagramStream, OutgoingDatagramStream, SendState};
+use crate::p2::udp::{IncomingDatagramStream, OutgoingDatagramStream};
 use crate::p2::{Pollable, SocketError, SocketResult};
 use crate::sockets::util::{is_valid_address_family, is_valid_remote_address};
 use crate::sockets::{
@@ -8,6 +8,8 @@ use crate::sockets::{
 };
 use async_trait::async_trait;
 use std::net::SocketAddr;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 use tokio::io::Interest;
 use wasmtime::component::Resource;
 use wasmtime::format_err;
@@ -64,24 +66,14 @@ impl udp::HostUdpSocket for WasiSocketsCtxView<'_> {
             return Err(ErrorCode::InvalidState.into());
         }
 
-        // We disconnect & (re)connect in two distinct steps for two reasons:
-        // - To leave our socket instance in a consistent state in case the
-        //   connect fails.
-        // - When reconnecting to a different address, Linux sometimes fails
-        //   if there isn't a disconnect in between.
-
-        // Step #1: Disconnect
-        if socket.is_connected() {
-            socket.disconnect()?;
-        }
-
-        // Step #2: (Re)connect
         if let Some(connect_addr) = remote_address {
             let Some(check) = socket.socket_addr_check() else {
                 return Err(ErrorCode::InvalidState.into());
             };
             check.check(connect_addr, SocketAddrUse::UdpConnect).await?;
             socket.connect_p2(connect_addr)?;
+        } else if socket.is_connected() {
+            socket.disconnect()?;
         }
 
         let incoming_stream = IncomingDatagramStream {
@@ -92,8 +84,8 @@ impl udp::HostUdpSocket for WasiSocketsCtxView<'_> {
             inner: socket.socket().clone(),
             remote_address,
             family: socket.address_family(),
-            send_state: SendState::Idle,
             socket_addr_check: socket.socket_addr_check().cloned(),
+            check_send_permit_count: 0,
         };
 
         Ok((
@@ -218,10 +210,12 @@ impl udp::HostIncomingDatagramStream for WasiSocketsCtxView<'_> {
         }
 
         let mut datagrams = vec![];
+        let mut sum = 0;
 
-        while datagrams.len() < max_results {
+        while datagrams.len() < max_results && sum < crate::MAX_READ_SIZE_ALLOC {
             match recv_one(stream) {
                 Ok(Some(datagram)) => {
+                    sum += 1 + datagram.data.len();
                     datagrams.push(datagram);
                 }
                 Ok(None) => {
@@ -262,9 +256,8 @@ impl udp::HostIncomingDatagramStream for WasiSocketsCtxView<'_> {
 #[async_trait]
 impl Pollable for IncomingDatagramStream {
     async fn ready(&mut self) {
-        // FIXME: Add `Interest::ERROR` when we update to tokio 1.32.
         self.inner
-            .ready(Interest::READABLE)
+            .ready(Interest::READABLE.add(Interest::ERROR))
             .await
             .expect("failed to await UDP socket readiness");
     }
@@ -274,17 +267,22 @@ impl udp::HostOutgoingDatagramStream for WasiSocketsCtxView<'_> {
     fn check_send(&mut self, this: Resource<udp::OutgoingDatagramStream>) -> SocketResult<u64> {
         let stream = self.table.get_mut(&this)?;
 
-        let permit = match stream.send_state {
-            SendState::Idle => {
-                const PERMIT: usize = 16;
-                stream.send_state = SendState::Permitted(PERMIT);
-                PERMIT
-            }
-            SendState::Permitted(n) => n,
-            SendState::Waiting => 0,
+        let count = if let Poll::Ready(_) =
+            pin!(stream.inner.ready(Interest::WRITABLE.add(Interest::ERROR)))
+                .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            // We don't know how many Tokio will accept, so we make up a
+            // reasonable number here.  If we're wrong and `send` returns
+            // `Ok(0)`, the guest will just have to deal with that, e.g. by
+            // looping or returning `EWOULDBLOCK`.
+            16
+        } else {
+            0
         };
 
-        Ok(permit.try_into().unwrap())
+        stream.check_send_permit_count = count;
+
+        Ok(count.try_into().unwrap())
     }
 
     async fn send(
@@ -334,25 +332,17 @@ impl udp::HostOutgoingDatagramStream for WasiSocketsCtxView<'_> {
 
         let stream = self.table.get_mut(&this)?;
 
-        match stream.send_state {
-            SendState::Permitted(n) if n >= datagrams.len() => {
-                stream.send_state = SendState::Idle;
-            }
-            SendState::Permitted(_) => {
-                return Err(SocketError::trap(wasmtime::format_err!(
-                    "unpermitted: argument exceeds permitted size"
-                )));
-            }
-            SendState::Idle | SendState::Waiting => {
-                return Err(SocketError::trap(wasmtime::format_err!(
-                    "unpermitted: must call check-send first"
-                )));
-            }
-        }
-
         if datagrams.is_empty() {
             return Ok(0);
         }
+
+        if datagrams.len() > stream.check_send_permit_count {
+            return Err(SocketError::trap(wasmtime::format_err!(
+                "unpermitted: argument exceeds permitted size"
+            )));
+        }
+
+        stream.check_send_permit_count -= datagrams.len();
 
         let mut count = 0;
 
@@ -364,8 +354,8 @@ impl udp::HostOutgoingDatagramStream for WasiSocketsCtxView<'_> {
                     return Ok(count);
                 }
                 Err(e) if matches!(e.downcast_ref(), Some(ErrorCode::WouldBlock)) => {
-                    stream.send_state = SendState::Waiting;
-                    return Ok(count);
+                    debug_assert!(count == 0);
+                    return Ok(0);
                 }
                 Err(e) => {
                     return Err(e);
@@ -396,17 +386,10 @@ impl udp::HostOutgoingDatagramStream for WasiSocketsCtxView<'_> {
 #[async_trait]
 impl Pollable for OutgoingDatagramStream {
     async fn ready(&mut self) {
-        match self.send_state {
-            SendState::Idle | SendState::Permitted(_) => {}
-            SendState::Waiting => {
-                // FIXME: Add `Interest::ERROR` when we update to tokio 1.32.
-                self.inner
-                    .ready(Interest::WRITABLE)
-                    .await
-                    .expect("failed to await UDP socket readiness");
-                self.send_state = SendState::Idle;
-            }
-        }
+        self.inner
+            .ready(Interest::WRITABLE.add(Interest::ERROR))
+            .await
+            .expect("failed to await UDP socket readiness");
     }
 }
 

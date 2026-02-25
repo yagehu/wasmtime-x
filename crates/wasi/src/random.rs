@@ -11,11 +11,13 @@ use wasmtime::component::HasData;
 /// When using this type you can skip the [`WasiRandomView`] trait, for
 /// example.
 ///
+/// [`wasmtime_wasi::p2::bindings::random::random::add_to_linker`]: crate::p2::bindings::random::random::add_to_linker
+///
 /// # Examples
 ///
 /// ```
 /// use wasmtime::component::Linker;
-/// use wasmtime::{Engine, Result, Config};
+/// use wasmtime::{Engine, Result};
 /// use wasmtime_wasi::random::*;
 ///
 /// struct MyStoreState {
@@ -23,9 +25,7 @@ use wasmtime::component::HasData;
 /// }
 ///
 /// fn main() -> Result<()> {
-///     let mut config = Config::new();
-///     config.async_support(true);
-///     let engine = Engine::new(&config)?;
+///     let engine = Engine::default();
 ///     let mut linker = Linker::new(&engine);
 ///
 ///     wasmtime_wasi::p2::bindings::random::random::add_to_linker::<MyStoreState, WasiRandom>(
@@ -41,10 +41,16 @@ impl HasData for WasiRandom {
     type Data<'a> = &'a mut WasiRandomCtx;
 }
 
+/// Default largest length accepted by wasi 0.2 `get-random-bytes` and
+/// `get-insecure-random-bytes` methods. This constant must match docs in
+/// cli-flags crate.
+pub const DEFAULT_MAX_SIZE: u64 = 64 << 20;
+
 pub struct WasiRandomCtx {
     pub(crate) random: Box<dyn RngCore + Send>,
     pub(crate) insecure_random: Box<dyn RngCore + Send>,
     pub(crate) insecure_random_seed: u128,
+    pub(crate) max_size: u64,
 }
 
 impl Default for WasiRandomCtx {
@@ -60,10 +66,12 @@ impl Default for WasiRandomCtx {
         // API.
         let insecure_random_seed =
             cap_rand::thread_rng(cap_rand::ambient_authority()).r#gen::<u128>();
+        let max_size = DEFAULT_MAX_SIZE;
         Self {
             random: thread_rng(),
             insecure_random,
             insecure_random_seed,
+            max_size,
         }
     }
 }

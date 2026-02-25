@@ -192,16 +192,16 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::Box;
             pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn simple_list1<T>(
+                fn simple_list1<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     l: wasmtime::component::__internal::Vec<u32>,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn simple_list2<T>(
+                fn simple_list2<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<
                     Output = wasmtime::component::__internal::Vec<u32>,
                 > + Send;
-                fn simple_list3<T>(
+                fn simple_list3<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     a: wasmtime::component::__internal::Vec<u32>,
                     b: wasmtime::component::__internal::Vec<u32>,
@@ -211,7 +211,7 @@ pub mod foo {
                         wasmtime::component::__internal::Vec<u32>,
                     ),
                 > + Send;
-                fn simple_list4<T>(
+                fn simple_list4<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     l: wasmtime::component::__internal::Vec<
                         wasmtime::component::__internal::Vec<u32>,
@@ -430,7 +430,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.simple_list1)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_simple_list2<_T, _D>(
@@ -447,7 +447,7 @@ pub mod exports {
                                 (wasmtime::component::__internal::Vec<u32>,),
                             >::new_unchecked(self.simple_list2)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_simple_list3<_T, _D>(
@@ -479,7 +479,7 @@ pub mod exports {
                                 ),
                             >::new_unchecked(self.simple_list3)
                         };
-                        let ((ret0,), _) = callee
+                        let (ret0,) = callee
                             .call_concurrent(accessor, (arg0, arg1))
                             .await?;
                         Ok(ret0)
@@ -513,9 +513,7 @@ pub mod exports {
                                 ),
                             >::new_unchecked(self.simple_list4)
                         };
-                        let ((ret0,), _) = callee
-                            .call_concurrent(accessor, (arg0,))
-                            .await?;
+                        let (ret0,) = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(ret0)
                     }
                 }

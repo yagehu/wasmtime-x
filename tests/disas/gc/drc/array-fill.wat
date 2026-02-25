@@ -12,25 +12,25 @@
 ;; function u0:0(i64 vmctx, i64, i32, i32, i64, i32) tail {
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly gv0+8
-;;     gv2 = load.i64 notrap aligned gv1+16
+;;     gv2 = load.i64 notrap aligned gv1+24
 ;;     gv3 = vmctx
 ;;     gv4 = load.i64 notrap aligned readonly can_move gv3+8
-;;     gv5 = load.i64 notrap aligned readonly can_move gv4+24
-;;     gv6 = load.i64 notrap aligned gv4+32
+;;     gv5 = load.i64 notrap aligned readonly can_move gv4+32
+;;     gv6 = load.i64 notrap aligned gv4+40
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64, v2: i32, v3: i32, v4: i64, v5: i32):
-;; @0027                               trapz v2, user16
+;; @0027                               trapz v2, user15
 ;; @0027                               v41 = load.i64 notrap aligned readonly can_move v0+8
-;; @0027                               v7 = load.i64 notrap aligned readonly can_move v41+24
+;; @0027                               v7 = load.i64 notrap aligned readonly can_move v41+32
 ;; @0027                               v6 = uextend.i64 v2
 ;; @0027                               v8 = iadd v7, v6
 ;; @0027                               v9 = iconst.i64 24
 ;; @0027                               v10 = iadd v8, v9  ; v9 = 24
 ;; @0027                               v11 = load.i32 notrap aligned readonly v10
-;; @0027                               v12 = uadd_overflow_trap v3, v5, user17
+;; @0027                               v12 = uadd_overflow_trap v3, v5, user16
 ;; @0027                               v13 = icmp ugt v12, v11
-;; @0027                               trapnz v13, user17
+;; @0027                               trapnz v13, user16
 ;; @0027                               v15 = uextend.i64 v11
 ;;                                     v43 = iconst.i64 3
 ;;                                     v44 = ishl v15, v43  ; v43 = 3

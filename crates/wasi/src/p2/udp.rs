@@ -18,19 +18,10 @@ pub struct OutgoingDatagramStream {
     /// Socket address family.
     pub(crate) family: SocketAddressFamily,
 
-    pub(crate) send_state: SendState,
-
     /// The check of allowed addresses
     pub(crate) socket_addr_check: Option<SocketAddrCheck>,
-}
 
-pub(crate) enum SendState {
-    /// Waiting for the API consumer to call `check-send`.
-    Idle,
-
-    /// Ready to send up to x datagrams.
-    Permitted(usize),
-
-    /// Waiting for the OS.
-    Waiting,
+    /// Remaining number of datagrams permitted by most recent `check-send`
+    /// call.
+    pub(crate) check_send_permit_count: usize,
 }

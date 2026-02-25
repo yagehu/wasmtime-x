@@ -274,13 +274,11 @@ where
             log::trace!("passing in parameters {params:?}");
             let actual = if declarations.options.guest_caller_async {
                 store
-                    .run_concurrent(async |a| func.call_concurrent(a, params).await.unwrap().0)
+                    .run_concurrent(async |a| func.call_concurrent(a, params).await.unwrap())
                     .await
                     .unwrap()
             } else {
-                let result = func.call_async(&mut store, params).await.unwrap();
-                func.post_return_async(&mut store).await.unwrap();
-                result
+                func.call_async(&mut store, params).await.unwrap()
             };
             log::trace!("got result {actual:?}");
             assert_eq!(actual, result);
@@ -382,7 +380,6 @@ pub fn dynamic_component_api_target(input: &mut arbitrary::Unstructured) -> arbi
                 func.call_async(&mut store, &params, &mut actual)
                     .await
                     .unwrap();
-                func.post_return_async(&mut store).await.unwrap();
             }
             log::trace!("received results {actual:?}");
             assert_eq!(actual, results);

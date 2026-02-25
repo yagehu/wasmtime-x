@@ -19,11 +19,14 @@ pub use wasmtime::*;
 mod component;
 #[cfg(feature = "component-model")]
 pub use component::*;
+#[cfg(not(feature = "rayon"))]
+mod rayoff;
 
 pub use crate::info::ModuleContext;
 pub use crate::snapshot::SnapshotVal;
 use ::wasmtime::{Result, bail, error::Context as _};
 use std::collections::{HashMap, HashSet};
+pub use wasmparser::ValType;
 
 const DEFAULT_KEEP_INIT_FUNC: bool = false;
 
@@ -232,7 +235,7 @@ impl Wizer {
         let renames = FuncRenames::parse(&self.func_renames)?;
 
         let snapshot = snapshot::snapshot(&cx, instance).await;
-        let rewritten_wasm = self.rewrite(&mut cx, &snapshot, &renames);
+        let rewritten_wasm = self.rewrite(&mut cx, &snapshot, &renames, true);
 
         self.debug_assert_valid_wasm(&rewritten_wasm);
 
@@ -377,7 +380,11 @@ pub trait InstanceState {
     ///
     /// This function panics if `name` isn't an exported global or if the type
     /// of the global doesn't fit in `SnapshotVal`.
-    fn global_get(&mut self, name: &str) -> impl Future<Output = SnapshotVal> + Send;
+    fn global_get(
+        &mut self,
+        name: &str,
+        type_hint: ValType,
+    ) -> impl Future<Output = SnapshotVal> + Send;
 
     /// Loads the contents of the memory specified by `name`, returning the
     /// entier contents as a `Vec<u8>`.

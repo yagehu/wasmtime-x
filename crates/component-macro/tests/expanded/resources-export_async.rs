@@ -276,11 +276,13 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<Y>(),
                     move |mut store, rep| {
                         wasmtime::component::__internal::Box::new(async move {
-                            HostY::drop(
-                                    &mut host_getter(store.data_mut()),
-                                    wasmtime::component::Resource::new_own(rep),
-                                )
-                                .await
+                            wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                                HostY::drop(
+                                        &mut host_getter(store.data_mut()),
+                                        wasmtime::component::Resource::new_own(rep),
+                                    )
+                                    .await,
+                            )
                         })
                     },
                 )?;
@@ -408,7 +410,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), ())
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_static_a<S: wasmtime::AsContextMut>(
@@ -427,7 +428,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), ())
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_method_a<S: wasmtime::AsContextMut>(
@@ -447,7 +447,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), (arg0,))
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                 }
@@ -573,7 +572,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), (arg0,))
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_static_a<S: wasmtime::AsContextMut>(
@@ -592,7 +590,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), ())
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_method_a<S: wasmtime::AsContextMut>(
@@ -616,7 +613,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), (arg0, arg1))
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                 }
@@ -713,7 +709,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), ())
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                 }
@@ -812,7 +807,6 @@ pub mod exports {
                         let (ret0,) = callee
                             .call_async(store.as_context_mut(), (arg0,))
                             .await?;
-                        callee.post_return_async(store.as_context_mut()).await?;
                         Ok(ret0)
                     }
                 }

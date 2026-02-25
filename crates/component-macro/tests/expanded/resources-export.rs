@@ -276,7 +276,9 @@ pub mod foo {
                     wasmtime::component::ResourceType::host::<Y>(),
                     move |mut store, rep| -> wasmtime::Result<()> {
                         let resource = wasmtime::component::Resource::new_own(rep);
-                        HostY::drop(&mut host_getter(store.data_mut()), resource)
+                        wasmtime::ToWasmtimeResult::to_wasmtime_result(
+                            HostY::drop(&mut host_getter(store.data_mut()), resource),
+                        )
                     },
                 )?;
                 Ok(())
@@ -398,7 +400,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_static_a<S: wasmtime::AsContextMut>(
@@ -412,7 +413,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_method_a<S: wasmtime::AsContextMut>(
@@ -427,7 +427,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                 }
@@ -548,7 +547,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_static_a<S: wasmtime::AsContextMut>(
@@ -562,7 +560,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.static_a_static_a)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                     pub fn call_method_a<S: wasmtime::AsContextMut>(
@@ -581,7 +578,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.method_a_method_a)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), (arg0, arg1))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                 }
@@ -673,7 +669,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.constructor_a_constructor)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), ())?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                 }
@@ -767,7 +762,6 @@ pub mod exports {
                             >::new_unchecked(self.funcs.constructor_b_constructor)
                         };
                         let (ret0,) = callee.call(store.as_context_mut(), (arg0,))?;
-                        callee.post_return(store.as_context_mut())?;
                         Ok(ret0)
                     }
                 }

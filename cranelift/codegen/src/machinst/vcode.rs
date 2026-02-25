@@ -1253,21 +1253,23 @@ impl<I: VCodeInst> VCode<I> {
                 }
                 inst.index()
             };
+            let inst_to_offset = |inst_index: usize| {
+                // Skip over cold blocks.
+                for offset in &inst_offsets[inst_index..] {
+                    if *offset != NO_INST_OFFSET {
+                        return *offset;
+                    }
+                }
+                func_body_len
+            };
             let from_inst_index = prog_point_to_inst(from);
             let to_inst_index = prog_point_to_inst(to);
-            let from_offset = inst_offsets[from_inst_index];
-            let to_offset = if to_inst_index == inst_offsets.len() {
-                func_body_len
-            } else {
-                inst_offsets[to_inst_index]
-            };
+            let from_offset = inst_to_offset(from_inst_index);
+            let to_offset = inst_to_offset(to_inst_index);
 
             // Empty ranges or unavailable offsets can happen
             // due to cold blocks and branch removal (see above).
-            if from_offset == NO_INST_OFFSET
-                || to_offset == NO_INST_OFFSET
-                || from_offset == to_offset
-            {
+            if from_offset == to_offset {
                 continue;
             }
 
@@ -1778,13 +1780,23 @@ impl<I: VCodeInst> VRegAllocator<I> {
         }
         let v = self.vreg_types.len();
         let (regclasses, tys) = I::rc_for_type(ty)?;
-        if v + regclasses.len() >= VReg::MAX {
+
+        // Check that new indices are in-bounds for regalloc2's
+        // VReg/Operand representation.
+        if v + regclasses.len() > VReg::MAX {
             return Err(CodegenError::CodeTooLarge);
         }
 
+        // Check that new indices are in-bounds for our Reg
+        // bit-packing on top of the RA2 types, which represents
+        // spillslots as well.
+        let check = |vreg: regalloc2::VReg| -> CodegenResult<Reg> {
+            Reg::from_virtual_reg_checked(vreg).ok_or(CodegenError::CodeTooLarge)
+        };
+
         let regs: ValueRegs<Reg> = match regclasses {
-            &[rc0] => ValueRegs::one(VReg::new(v, rc0).into()),
-            &[rc0, rc1] => ValueRegs::two(VReg::new(v, rc0).into(), VReg::new(v + 1, rc1).into()),
+            &[rc0] => ValueRegs::one(check(VReg::new(v, rc0))?),
+            &[rc0, rc1] => ValueRegs::two(check(VReg::new(v, rc0))?, check(VReg::new(v + 1, rc1))?),
             // We can extend this if/when we support 32-bit targets; e.g.,
             // an i128 on a 32-bit machine will need up to four machine regs
             // for a `Value`.

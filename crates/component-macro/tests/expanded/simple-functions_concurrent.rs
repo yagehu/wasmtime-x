@@ -192,25 +192,25 @@ pub mod foo {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::Box;
             pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn f1<T>(
+                fn f1<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn f2<T>(
+                fn f2<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     a: u32,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn f3<T>(
+                fn f3<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     a: u32,
                     b: u32,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
-                fn f4<T>(
+                fn f4<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = u32> + Send;
-                fn f5<T>(
+                fn f5<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                 ) -> impl ::core::future::Future<Output = (u32, u32)> + Send;
-                fn f6<T>(
+                fn f6<T: Send>(
                     accessor: &wasmtime::component::Accessor<T, Self>,
                     a: u32,
                     b: u32,
@@ -420,7 +420,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f1)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, ()).await?;
+                        let () = callee.call_concurrent(accessor, ()).await?;
                         Ok(())
                     }
                     pub async fn call_f2<_T, _D>(
@@ -438,7 +438,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f2)
                         };
-                        let ((), _) = callee.call_concurrent(accessor, (arg0,)).await?;
+                        let () = callee.call_concurrent(accessor, (arg0,)).await?;
                         Ok(())
                     }
                     pub async fn call_f3<_T, _D>(
@@ -457,9 +457,7 @@ pub mod exports {
                                 (),
                             >::new_unchecked(self.f3)
                         };
-                        let ((), _) = callee
-                            .call_concurrent(accessor, (arg0, arg1))
-                            .await?;
+                        let () = callee.call_concurrent(accessor, (arg0, arg1)).await?;
                         Ok(())
                     }
                     pub async fn call_f4<_T, _D>(
@@ -476,7 +474,7 @@ pub mod exports {
                                 (u32,),
                             >::new_unchecked(self.f4)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_f5<_T, _D>(
@@ -493,7 +491,7 @@ pub mod exports {
                                 ((u32, u32),),
                             >::new_unchecked(self.f5)
                         };
-                        let ((ret0,), _) = callee.call_concurrent(accessor, ()).await?;
+                        let (ret0,) = callee.call_concurrent(accessor, ()).await?;
                         Ok(ret0)
                     }
                     pub async fn call_f6<_T, _D>(
@@ -513,7 +511,7 @@ pub mod exports {
                                 ((u32, u32, u32),),
                             >::new_unchecked(self.f6)
                         };
-                        let ((ret0,), _) = callee
+                        let (ret0,) = callee
                             .call_concurrent(accessor, (arg0, arg1, arg2))
                             .await?;
                         Ok(ret0)

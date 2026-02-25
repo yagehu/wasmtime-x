@@ -215,6 +215,7 @@ impl Val {
             InterfaceType::ErrorContext(_) => {
                 ErrorContext::linear_lift_from_flat(cx, ty, next(src))?.into_val()
             }
+            InterfaceType::FixedLengthList(_) => todo!(), // FIXME(#12279)
         })
     }
 
@@ -341,6 +342,7 @@ impl Val {
             InterfaceType::ErrorContext(_) => {
                 ErrorContext::linear_lift_from_memory(cx, ty, bytes)?.into_val()
             }
+            InterfaceType::FixedLengthList(_) => todo!(), // FIXME(#12279)
         })
     }
 
@@ -491,6 +493,7 @@ impl Val {
                 )
             }
             (InterfaceType::ErrorContext(_), _) => unexpected(ty, self),
+            (InterfaceType::FixedLengthList(_), _) => todo!(), // FIXME(#12279)
         }
     }
 
@@ -644,6 +647,7 @@ impl Val {
                 )
             }
             (InterfaceType::ErrorContext(_), _) => unexpected(ty, self),
+            (InterfaceType::FixedLengthList(_), _) => todo!(), // FIXME(#12279)
         }
     }
 
@@ -915,7 +919,7 @@ fn load_list(cx: &mut LiftContext<'_>, ty: TypeListIndex, ptr: usize, len: usize
         .checked_mul(element_size)
         .and_then(|len| ptr.checked_add(len))
     {
-        Some(n) if n <= cx.memory().len() => {}
+        Some(n) if n <= cx.memory().len() => cx.consume_fuel(n - ptr)?,
         _ => bail!("list pointer/length out of bounds of memory"),
     }
     if ptr % usize::try_from(element_alignment)? != 0 {

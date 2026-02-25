@@ -5,7 +5,7 @@
 
 use backtrace::Backtrace;
 use std::{alloc::GlobalAlloc, cell::Cell, mem, ptr, time};
-use wasmtime_error::{Error, OutOfMemory, Result, bail};
+use wasmtime_core::error::{Error, OutOfMemory, Result, bail};
 
 /// An allocator for use with `OomTest`.
 #[non_exhaustive]
@@ -26,10 +26,13 @@ enum OomState {
 
     /// We are inside an OOM test and should inject an OOM when the counter
     /// reaches zero.
-    OomOnAlloc(u32),
+    OomOnAlloc {
+        counter: u32,
+        allow_alloc_after: bool,
+    },
 
     /// We are inside an OOM test and we already injected an OOM.
-    DidOom,
+    DidOom { allow_alloc: bool },
 }
 
 thread_local! {
@@ -74,30 +77,76 @@ unsafe impl GlobalAlloc for OomTestAllocator {
 
         let new_state;
         let ptr;
-        {
+
+        'outside_oom_test: {
             // NB: It's okay to log/backtrace/etc... in this block because the
             // current state is `OutsideOomTest`, so any re-entrant allocations
             // will be passed through to the system allocator.
 
+            // Don't panic on allocation-after-OOM attempts if we
+            // are already in the middle of panicking. That will
+            // cause an abort and we won't get as good of an error
+            // message for the original panic, which is most likely
+            // some kind of test failure.
+            if old_state == OomState::OutsideOomTest || std::thread::panicking() {
+                new_state = old_state;
+                ptr = unsafe { std::alloc::System.alloc(layout) };
+                break 'outside_oom_test;
+            }
+
+            let bt = Backtrace::new();
+            let bt = format!("{bt:?}");
+
+            // XXX: `env_logger` internally buffers writes in a `Vec` which
+            // means our OOM tests might sporadically fail when you enable
+            // logging to debug stuff, so simply let the allocation through if
+            // `env_logger` is on the stack.
+            if bt.contains("env_logger") {
+                new_state = old_state;
+                ptr = unsafe { std::alloc::System.alloc(layout) };
+                break 'outside_oom_test;
+            }
+
             match old_state {
-                OomState::OutsideOomTest => {
-                    new_state = OomState::OutsideOomTest;
-                    ptr = unsafe { std::alloc::System.alloc(layout) };
-                }
-                OomState::OomOnAlloc(0) => {
+                OomState::OutsideOomTest => unreachable!("handled above"),
+
+                OomState::OomOnAlloc {
+                    counter: 0,
+                    allow_alloc_after,
+                } => {
                     log::trace!(
-                        "injecting OOM for allocation: {layout:?}\nAllocation backtrace:\n{:?}",
-                        Backtrace::new(),
+                        "injecting OOM for allocation: {layout:?}\nAllocation backtrace:\n{bt}"
                     );
-                    new_state = OomState::DidOom;
+                    new_state = OomState::DidOom {
+                        allow_alloc: allow_alloc_after,
+                    };
                     ptr = ptr::null_mut();
                 }
-                OomState::OomOnAlloc(c) => {
-                    new_state = OomState::OomOnAlloc(c - 1);
+
+                OomState::OomOnAlloc {
+                    counter: c,
+                    allow_alloc_after,
+                } => {
+                    new_state = OomState::OomOnAlloc {
+                        counter: c - 1,
+                        allow_alloc_after,
+                    };
                     ptr = unsafe { std::alloc::System.alloc(layout) };
                 }
-                OomState::DidOom => {
-                    panic!("OOM test attempted to allocate after OOM: {layout:?}")
+
+                OomState::DidOom { allow_alloc } => {
+                    log::trace!("Attempt to allocate {layout:?} after OOM:\n{bt}");
+                    if allow_alloc {
+                        new_state = OomState::DidOom { allow_alloc: true };
+                        ptr = ptr::null_mut();
+                    } else {
+                        panic!(
+                            "OOM test attempted to allocate after OOM: {layout:?}\n\
+                             \n\
+                             Hint: if this is acceptable, configure the OOM test to allow allocation \
+                             after OOM with `OomTest::allow_alloc_after_oom`"
+                        )
+                    }
                 }
             }
         }
@@ -136,6 +185,7 @@ unsafe impl GlobalAlloc for OomTestAllocator {
 ///     OomTest::new()
 ///         .max_iters(1_000_000)
 ///         .max_duration(Duration::from_secs(5))
+///         .allow_alloc_after_oom(true)
 ///         .test(|| {
 ///             todo!("insert code here that should handle OOM here...")
 ///         })
@@ -144,6 +194,7 @@ unsafe impl GlobalAlloc for OomTestAllocator {
 pub struct OomTest {
     max_iters: Option<u32>,
     max_duration: Option<time::Duration>,
+    allow_alloc_after_oom: bool,
 }
 
 impl OomTest {
@@ -157,11 +208,12 @@ impl OomTest {
         // NB: `std::backtrace::Backtrace` doesn't have ways to handle
         // OOM. Ideally we would just disable the `"backtrace"` cargo feature,
         // but workspace feature resolution doesn't play nice with that.
-        wasmtime_error::disable_backtrace();
+        wasmtime_core::error::disable_backtrace();
 
         OomTest {
             max_iters: None,
             max_duration: None,
+            allow_alloc_after_oom: false,
         }
     }
 
@@ -174,6 +226,15 @@ impl OomTest {
     /// Configure the maximum duration of time to run an OOM text.
     pub fn max_duration(&mut self, max_duration: time::Duration) -> &mut Self {
         self.max_duration = Some(max_duration);
+        self
+    }
+
+    /// Configure whether to allow allocation attempts after an OOM has already
+    /// been injected.
+    ///
+    /// The default is `false`.
+    pub fn allow_alloc_after_oom(&mut self, allow: bool) -> &mut Self {
+        self.allow_alloc_after_oom = allow;
         self
     }
 
@@ -200,7 +261,10 @@ impl OomTest {
 
             log::trace!("=== Injecting OOM after {i} allocations ===");
             let (result, old_state) = {
-                let guard = ScopedOomState::new(OomState::OomOnAlloc(i));
+                let guard = ScopedOomState::new(OomState::OomOnAlloc {
+                    counter: i,
+                    allow_alloc_after: self.allow_alloc_after_oom,
+                });
                 assert_eq!(guard.prev_state, OomState::OutsideOomTest);
 
                 let result = test_func();
@@ -213,24 +277,24 @@ impl OomTest {
 
                 // The test function completed successfully before we ran out of
                 // allocation fuel, so we're done.
-                (Ok(()), OomState::OomOnAlloc(_)) => break,
+                (Ok(()), OomState::OomOnAlloc { .. }) => break,
 
                 // We injected an OOM and the test function handled it
                 // correctly; continue to the next iteration.
-                (Err(e), OomState::DidOom) if self.is_oom_error(&e) => {}
+                (Err(e), OomState::DidOom { .. }) if self.is_oom_error(&e) => {}
 
                 // Missed OOMs.
-                (Ok(()), OomState::DidOom) => {
+                (Ok(()), OomState::DidOom { .. }) => {
                     bail!("OOM test function missed an OOM: returned Ok(())");
                 }
-                (Err(e), OomState::DidOom) => {
+                (Err(e), OomState::DidOom { .. }) => {
                     return Err(
                         e.context("OOM test function missed an OOM: returned non-OOM error")
                     );
                 }
 
                 // Unexpected error.
-                (Err(e), OomState::OomOnAlloc(_)) => {
+                (Err(e), OomState::OomOnAlloc { .. }) => {
                     return Err(
                         e.context("OOM test function returned an error when there was no OOM")
                     );

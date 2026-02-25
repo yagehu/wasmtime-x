@@ -20,7 +20,7 @@ use wasmtime_environ::component::{
     GlobalInitializer, InstantiateModule, NameMapNoIntern, OptionsIndex, StaticModuleIndex,
     TrampolineIndex, TypeComponentIndex, TypeFuncIndex, UnsafeIntrinsic, VMComponentOffsets,
 };
-use wasmtime_environ::{Abi, CompiledFunctionsTable, FuncKey, TypeTrace};
+use wasmtime_environ::{Abi, CompiledFunctionsTable, FuncKey, TypeTrace, WasmChecksum};
 use wasmtime_environ::{FunctionLoc, HostPtr, ObjectKind, PrimaryMap};
 
 /// A compiled WebAssembly Component.
@@ -94,6 +94,9 @@ struct ComponentInner {
     /// `realloc`, to avoid the need to look up types in the registry and take
     /// locks when calling `realloc` via `TypedFunc::call_raw`.
     realloc_func_type: Arc<FuncType>,
+
+    /// The checksum of the source binary from which the module was compiled.
+    checksum: WasmChecksum,
 }
 
 pub(crate) struct AllCallFuncPointers {
@@ -407,6 +410,7 @@ impl Component {
             table: index,
             mut types,
             mut static_modules,
+            checksum,
         } = match artifacts {
             Some(artifacts) => artifacts,
             None => postcard::from_bytes(code_memory.wasmtime_info())?,
@@ -427,7 +431,7 @@ impl Component {
         let signatures = engine.register_and_canonicalize_types(
             types.module_types_mut(),
             static_modules.iter_mut().map(|(_, m)| &mut m.module),
-        );
+        )?;
         types.canonicalize_for_runtime_usage(&mut |idx| signatures.shared_type(idx).unwrap());
 
         // Assemble the `EngineCode` artifact which is shared by all core wasm
@@ -461,6 +465,7 @@ impl Component {
                 info,
                 index,
                 realloc_func_type,
+                checksum,
             }),
         })
     }
@@ -653,7 +658,7 @@ impl Component {
         };
         for init in &self.env_component().initializers {
             match init {
-                GlobalInitializer::InstantiateModule(inst) => match inst {
+                GlobalInitializer::InstantiateModule(inst, _) => match inst {
                     InstantiateModule::Static(index, _) => {
                         let module = self.static_module(*index);
                         resources.add(&module.resources_required());
@@ -865,6 +870,15 @@ impl Component {
 
     pub(crate) fn realloc_func_ty(&self) -> &Arc<FuncType> {
         &self.inner.realloc_func_type
+    }
+
+    #[allow(
+        unused,
+        reason = "used only for verification with wasmtime `rr` feature \
+        and requires a lot of unnecessary gating across crates"
+    )]
+    pub(crate) fn checksum(&self) -> &WasmChecksum {
+        &self.inner.checksum
     }
 
     /// Returns the `Export::LiftedFunction` metadata associated with `export`.

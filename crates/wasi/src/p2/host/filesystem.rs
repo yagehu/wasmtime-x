@@ -115,7 +115,12 @@ impl HostDescriptor for WasiFilesystemCtxView<'_> {
 
         let (mut buffer, r) = f
             .run_blocking(move |f| {
-                let mut buffer = vec![0; len.try_into().unwrap_or(usize::MAX)];
+                let mut buffer = vec![
+                    0;
+                    len.try_into()
+                        .unwrap_or(usize::MAX)
+                        .min(crate::MAX_READ_SIZE_ALLOC)
+                ];
                 let r = f.read_vectored_at(&mut [IoSliceMut::new(&mut buffer)], offset);
                 (buffer, r)
             })
@@ -235,7 +240,7 @@ impl HostDescriptor for WasiFilesystemCtxView<'_> {
     async fn stat(&mut self, fd: Resource<types::Descriptor>) -> FsResult<types::DescriptorStat> {
         let descriptor = self.table.get(&fd)?;
         let stat = descriptor.stat().await?;
-        Ok(stat.into())
+        Ok(stat.try_into()?)
     }
 
     async fn stat_at(
@@ -246,7 +251,7 @@ impl HostDescriptor for WasiFilesystemCtxView<'_> {
     ) -> FsResult<types::DescriptorStat> {
         let d = self.table.get(&fd)?.dir()?;
         let stat = d.stat_at(path_flags.into(), path).await?;
-        Ok(stat.into())
+        Ok(stat.try_into()?)
     }
 
     async fn set_times_at(
@@ -576,8 +581,10 @@ impl From<crate::filesystem::MetadataHashValue> for types::MetadataHashValue {
     }
 }
 
-impl From<crate::filesystem::DescriptorStat> for types::DescriptorStat {
-    fn from(
+impl TryFrom<crate::filesystem::DescriptorStat> for types::DescriptorStat {
+    type Error = ErrorCode;
+
+    fn try_from(
         crate::filesystem::DescriptorStat {
             type_,
             link_count,
@@ -586,15 +593,17 @@ impl From<crate::filesystem::DescriptorStat> for types::DescriptorStat {
             data_modification_timestamp,
             status_change_timestamp,
         }: crate::filesystem::DescriptorStat,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ErrorCode> {
+        Ok(Self {
             type_: type_.into(),
             link_count,
             size,
-            data_access_timestamp: data_access_timestamp.map(Into::into),
-            data_modification_timestamp: data_modification_timestamp.map(Into::into),
-            status_change_timestamp: status_change_timestamp.map(Into::into),
-        }
+            data_access_timestamp: data_access_timestamp.map(|t| t.try_into()).transpose()?,
+            data_modification_timestamp: data_modification_timestamp
+                .map(|t| t.try_into())
+                .transpose()?,
+            status_change_timestamp: status_change_timestamp.map(|t| t.try_into()).transpose()?,
+        })
     }
 }
 
@@ -755,6 +764,12 @@ fn systemtimespec_from(
             let st = systemtime_from(st)?;
             Ok(Some(SystemTimeSpec::Absolute(st)))
         }
+    }
+}
+
+impl From<crate::clocks::DatetimeError> for ErrorCode {
+    fn from(_: crate::clocks::DatetimeError) -> ErrorCode {
+        ErrorCode::Overflow
     }
 }
 

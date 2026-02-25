@@ -53,16 +53,12 @@ pub fn find_tests(root: &Path) -> Result<Vec<WastTest>> {
     )
     .with_context(|| format!("failed to add tests from `{}`", cm_tests.display()))?;
 
-    // Temporarily work around upstream tests that loop forever.
-    //
-    // Now that `thread.yield` and `CALLBACK_CODE_YIELD` are both no-ops in
-    // non-blocking contexts, these tests need to be updated; meanwhile, we skip
-    // them.
-    //
-    // TODO: remove this once
-    // https://github.com/WebAssembly/component-model/pull/578 has been merged:
+    // Temporarily work around upstream tests that fail in unexpected ways (e.g.
+    // panics, loops, etc).
     {
-        let skip_list = &["drop-subtask.wast", "async-calls-sync.wast"];
+        let skip_list = &[
+            // .. empty currently ..
+        ];
         tests.retain(|test| {
             test.path
                 .file_name()
@@ -185,9 +181,13 @@ fn component_test_config(test: &Path) -> TestConfig {
 
     if let Some(parent) = test.parent() {
         if parent.ends_with("async")
-            || ["trap-in-post-return.wast"]
-                .into_iter()
-                .any(|name| Some(name) == test.file_name().and_then(|s| s.to_str()))
+            || [
+                "trap-in-post-return.wast",
+                "resources.wast",
+                "multiple-resources.wast",
+            ]
+            .into_iter()
+            .any(|name| Some(name) == test.file_name().and_then(|s| s.to_str()))
         {
             ret.component_model_async = Some(true);
             ret.component_model_async_stackful = Some(true);
@@ -268,6 +268,7 @@ macro_rules! foreach_config_option {
             component_model_threading
             component_model_error_context
             component_model_gc
+            component_model_fixed_length_lists
             simd
             gc_types
             exceptions
@@ -437,6 +438,17 @@ impl WastTest {
     /// configuration.
     pub fn should_fail(&self, config: &WastConfig) -> bool {
         if !config.compiler.supports_host() {
+            return true;
+        }
+
+        // These tests in the `component-model` submodule have not yet been
+        // updated to account for the recent threading-related intrinsic
+        // changes
+        let unsupported = [
+            "test/async/same-component-stream-future.wast",
+            "test/async/trap-if-block-and-sync.wast",
+        ];
+        if unsupported.iter().any(|part| self.path.ends_with(part)) {
             return true;
         }
 

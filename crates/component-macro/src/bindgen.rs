@@ -144,6 +144,9 @@ impl Parse for Config {
                     Opt::WasmtimeCrate(f) => {
                         opts.wasmtime_crate = Some(f.into_token_stream().to_string())
                     }
+                    Opt::Anyhow(val) => {
+                        opts.anyhow = val;
+                    }
                     Opt::IncludeGeneratedCodeFromFile(i) => include_generated_code_from_file = i,
                     Opt::Imports(config, span) => {
                         if imports_configured {
@@ -253,6 +256,7 @@ mod kw {
     syn::custom_keyword!(skip_mut_forwarding_impls);
     syn::custom_keyword!(require_store_data_send);
     syn::custom_keyword!(wasmtime_crate);
+    syn::custom_keyword!(anyhow);
     syn::custom_keyword!(include_generated_code_from_file);
     syn::custom_keyword!(debug);
     syn::custom_keyword!(imports);
@@ -261,7 +265,6 @@ mod kw {
     syn::custom_keyword!(trappable);
     syn::custom_keyword!(ignore_wit);
     syn::custom_keyword!(exact);
-    syn::custom_keyword!(task_exit);
 }
 
 enum Opt {
@@ -277,6 +280,7 @@ enum Opt {
     SkipMutForwardingImpls(bool),
     RequireStoreDataSend(bool),
     WasmtimeCrate(syn::Path),
+    Anyhow(bool),
     IncludeGeneratedCodeFromFile(bool),
     Debug(bool),
     Imports(FunctionConfig, Span),
@@ -403,6 +407,10 @@ impl Parse for Opt {
             input.parse::<kw::wasmtime_crate>()?;
             input.parse::<Token![:]>()?;
             Ok(Opt::WasmtimeCrate(input.parse()?))
+        } else if l.peek(kw::anyhow) {
+            input.parse::<kw::anyhow>()?;
+            input.parse::<Token![:]>()?;
+            Ok(Opt::Anyhow(input.parse::<syn::LitBool>()?.value))
         } else if l.peek(kw::include_generated_code_from_file) {
             input.parse::<kw::include_generated_code_from_file>()?;
             input.parse::<Token![:]>()?;
@@ -531,9 +539,6 @@ fn parse_function_config(input: ParseStream<'_>) -> Result<FunctionConfig> {
                 } else if l.peek(kw::exact) {
                     input.parse::<kw::exact>()?;
                     flags |= FunctionFlags::EXACT;
-                } else if l.peek(kw::task_exit) {
-                    input.parse::<kw::task_exit>()?;
-                    flags |= FunctionFlags::TASK_EXIT;
                 } else {
                     return Err(l.error());
                 }

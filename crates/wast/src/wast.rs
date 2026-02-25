@@ -310,17 +310,7 @@ impl WastContext {
                         None => func.call(&mut *store, &values, &mut results),
                     };
                     Ok(match result {
-                        Ok(()) => {
-                            let result = match &replace.rt {
-                                Some(rt) => rt.block_on(func.post_return_async(&mut *store)),
-                                None => func.post_return(&mut *store),
-                            };
-
-                            match result {
-                                Ok(()) => Outcome::Ok(Results::Component(results)),
-                                Err(e) => Outcome::Trap(e),
-                            }
-                        }
+                        Ok(()) => Outcome::Ok(Results::Component(results)),
                         Err(e) => Outcome::Trap(e),
                     })
                 }
@@ -561,7 +551,14 @@ impl WastContext {
 
         let mut ast = json_from_wast::Opts::default()
             .dwarf(self.generate_dwarf)
-            .convert(filename, wast, ast)?;
+            .convert(filename, wast, ast)
+            .to_wasmtime_result()?;
+
+        // Clear out any modules, if any, from a previous `*.wast` file being
+        // run, if any.
+        if !self.modules_by_filename.is_empty() {
+            self.modules_by_filename = Arc::default();
+        }
         let modules_by_filename = Arc::get_mut(&mut self.modules_by_filename).unwrap();
         for (name, bytes) in ast.wasms.drain(..) {
             let prev = modules_by_filename.insert(name, bytes);

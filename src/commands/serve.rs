@@ -5,6 +5,7 @@ use futures::future::FutureExt;
 use http::{Response, StatusCode};
 use http_body_util::BodyExt as _;
 use http_body_util::combinators::UnsyncBoxBody;
+use hyper::body::{Body, Frame, SizeHint};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -231,10 +232,14 @@ impl ServeCommand {
         builder.stdout(LogStream::new(stdout_prefix, Output::Stdout));
         builder.stderr(LogStream::new(stderr_prefix, Output::Stderr));
 
+        let mut table = wasmtime::component::ResourceTable::new();
+        if let Some(max) = self.run.common.wasi.max_resources {
+            table.set_max_capacity(max);
+        }
         let mut host = Host {
-            table: wasmtime::component::ResourceTable::new(),
+            table,
             ctx: builder.build(),
-            http: WasiHttpCtx::new(),
+            http: self.run.wasi_http_ctx()?,
             http_outgoing_body_buffer_chunks: self.run.common.wasi.http_outgoing_body_buffer_chunks,
             http_outgoing_body_chunk_size: self.run.common.wasi.http_outgoing_body_chunk_size,
 
@@ -301,6 +306,10 @@ impl ServeCommand {
         }
 
         let mut store = Store::new(engine, host);
+
+        if let Some(fuel) = self.run.common.wasi.hostcall_fuel {
+            store.set_hostcall_fuel(fuel);
+        }
 
         store.data_mut().limits = self.run.store_limits();
         store.limiter(|t| &mut t.limits);
@@ -403,7 +412,6 @@ impl ServeCommand {
             .common
             .config(use_pooling_allocator_by_default().unwrap_or(None))?;
         config.wasm_component_model(true);
-        config.async_support(true);
 
         if self.run.common.wasm.timeout.is_some() {
             config.epoch_interruption(true);
@@ -431,7 +439,7 @@ impl ServeCommand {
 
         let instance = linker.instantiate_pre(&component)?;
         #[cfg(feature = "component-model-async")]
-        let instance = match wasmtime_wasi_http::p3::bindings::ProxyPre::new(instance.clone()) {
+        let instance = match wasmtime_wasi_http::p3::bindings::ServicePre::new(instance.clone()) {
             Ok(pre) => ProxyPre::P3(pre),
             Err(_) => ProxyPre::P2(p2::ProxyPre::new(instance)?),
         };
@@ -907,13 +915,35 @@ async fn handle_request(
                             let body = body.map_err(ErrorCode::from_hyper_request_error);
                             let req = http::Request::from_parts(req, body);
                             let (request, request_io_result) = Request::from_http(req);
-                            let (res, task) = proxy.handle(store, request).await??;
+                            let res = proxy.handle(store, request).await??;
                             let res = store
                                 .with(|mut store| res.into_http(&mut store, request_io_result))?;
-                            _ = tx.send(res.map(|body| body.map_err(|e| e.into()).boxed_unsync()));
 
-                            // Wait for the task to finish.
-                            task.block(store).await;
+                            // With the guest response now transformed into a
+                            // host-compatible response layer one more wrapper
+                            // around the body. This layer is solely responsible
+                            // for dropping a channel half on destruction, and
+                            // this enables waiting here until the body is
+                            // consumed by waiting for this destruction to
+                            // happen.
+                            let (resp_body_tx, resp_body_rx) = oneshot::channel();
+                            let res = res.map(|body| {
+                                let body = body.map_err(|e| e.into());
+                                P3BodyWrapper {
+                                    _tx: resp_body_tx,
+                                    body,
+                                }
+                                .boxed_unsync()
+                            });
+
+                            // If `wasmtime serve` is waiting on this response
+                            // and actually got it then wait for the body to
+                            // finish, otherwise it's thrown away so skip that
+                            // step.
+                            if tx.send(res).is_ok() {
+                                _ = resp_body_rx.await;
+                            }
+
                             Ok(())
                         }
                     }
@@ -927,14 +957,41 @@ async fn handle_request(
         }),
     );
 
-    Ok(match rx {
+    return Ok(match rx {
         Receiver::P2(rx) => rx
             .await
             .context("guest never invoked `response-outparam::set` method")?
             .map_err(|e| wasmtime::Error::from(e))?
             .map(|body| body.map_err(|e| e.into()).boxed_unsync()),
         Receiver::P3(rx) => rx.await?,
-    })
+    });
+
+    // Forwarding implementation of `Body` to an inner `B` with the sole purpose
+    // of carrying `_tx` to its destruction.
+    struct P3BodyWrapper<B> {
+        body: B,
+        _tx: oneshot::Sender<()>,
+    }
+
+    impl<B: Body + Unpin> Body for P3BodyWrapper<B> {
+        type Data = B::Data;
+        type Error = B::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            Pin::new(&mut self.body).poll_frame(cx)
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.body.is_end_stream()
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            self.body.size_hint()
+        }
+    }
 }
 
 #[derive(Clone)]

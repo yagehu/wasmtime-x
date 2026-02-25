@@ -33,14 +33,16 @@ pub async fn create_memory(
     // Create a memory, though it will never be used for constructing a memory
     // with an allocator: instead the memories are either preallocated (i.e.,
     // shared memory) or allocated manually below.
-    let memory_id = module.memories.push(*memory_ty.wasmtime_memory());
+    let memory_id = module.memories.push(*memory_ty.wasmtime_memory())?;
 
     // Since we have only associated a single memory with the "frankenstein"
     // instance, it will be exported at index 0.
     debug_assert_eq!(memory_id.as_u32(), 0);
+    let name = module.strings.insert("")?;
     module
         .exports
-        .insert(String::new(), EntityIndex::Memory(memory_id));
+        .insert(name, EntityIndex::Memory(memory_id))?;
+    let info = ModuleRuntimeInfo::bare(Arc::new(module))?;
 
     // We create an instance in the on-demand allocator when creating handles
     // associated with external objects. The configured instance allocator
@@ -57,7 +59,7 @@ pub async fn create_memory(
                 AllocateInstanceKind::Dummy {
                     allocator: &allocator,
                 },
-                &ModuleRuntimeInfo::bare(Arc::new(module)),
+                &info,
                 Default::default(),
             )
             .await
