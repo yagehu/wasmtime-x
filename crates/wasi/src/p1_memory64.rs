@@ -1191,6 +1191,10 @@ fn write_byte(
 // required for T, i.e., in terms of the preview 2 wit interface, and state
 // stored in the WasiP1Adapter struct.
 impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
+    fn set_hostcall_fuel(&mut self, fuel: usize) {
+        self.hostcall_fuel = fuel;
+    }
+
     #[instrument(skip(self, memory))]
     fn args_get(
         &mut self,
