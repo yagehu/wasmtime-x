@@ -876,12 +876,12 @@ fn memory_growth_failure() -> Result<()> {
             "tests/all/cli_tests/memory-grow-failure.wat",
         ])
         .output()?;
-    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("forcing a memory growth failure to be a trap"),
         "bad stderr: {stderr}"
     );
+    assert!(!output.status.success());
     Ok(())
 }
 
@@ -1044,7 +1044,10 @@ fn preview2_stdin() -> Result<()> {
     // helper thread depends on how much the OS buffers for us. For now give
     // some some slop and assume that OSes are unlikely to buffer more than
     // that.
-    let slop = 256 * 1024;
+    //
+    // Note that 256 * 1024 is _one_ byte too small on Asahi Linux (possibly
+    // related to 16K page sizes?), hence the `+ 1` here:
+    let slop = 256 * 1024 + 1;
     for amt in [0, 100, 100_000] {
         let written = count_up_to(amt)?;
         assert!(written < slop + amt, "wrote too much {written}");
@@ -1142,6 +1145,17 @@ mod test_programs {
             "",
             "is an argument",
             "with 🚩 emoji",
+        ])?;
+        Ok(())
+    }
+
+    #[test]
+    fn p2_cli_initial_cwd() -> Result<()> {
+        run_wasmtime(&[
+            "run",
+            "-Wcomponent-model",
+            "-Scwd=/sandbox",
+            P2_CLI_INITIAL_CWD_COMPONENT,
         ])?;
         Ok(())
     }
@@ -1748,6 +1762,70 @@ mod test_programs {
     }
 
     #[tokio::test]
+    async fn p2_cli_serve_header_replaces_request_header() -> Result<()> {
+        let server = WasmtimeServe::new(P2_CLI_SERVE_ECHO_ENV_COMPONENT, |cmd| {
+            cmd.arg("--env=FOO=bar");
+            cmd.arg("--env=BAR=baz");
+            cmd.arg("--header=env: FOO");
+            cmd.arg("--header=env: BAR");
+            cmd.arg("--header=expect-env-count: 2");
+            cmd.arg("-Scli");
+        })?;
+
+        let resp = server
+            .send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/")
+                    .header("env", "BAR")
+                    .body(String::new())
+                    .context("failed to make request")?,
+            )
+            .await?;
+
+        assert!(resp.status().is_success());
+        assert!(resp.body().is_empty());
+        assert_eq!(
+            resp.headers().get("env"),
+            Some(&HeaderValue::from_static("bar"))
+        );
+
+        server.finish()?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn p2_cli_serve_header_file() -> Result<()> {
+        let td = tempfile::TempDir::new()?;
+        let headers_path = td.path().join("headers.txt");
+        std::fs::write(&headers_path, "env: FOO\n\nunused: value\n")?;
+
+        let server = WasmtimeServe::new(P2_CLI_SERVE_ECHO_ENV_COMPONENT, |cmd| {
+            cmd.arg("--env=FOO=bar");
+            cmd.arg(format!("--header=@{}", headers_path.display()));
+            cmd.arg("-Scli");
+        })?;
+
+        let resp = server
+            .send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/")
+                    .body(String::new())
+                    .context("failed to make request")?,
+            )
+            .await?;
+
+        assert!(resp.status().is_success());
+        assert!(resp.body().is_empty());
+        assert_eq!(
+            resp.headers().get("env"),
+            Some(&HeaderValue::from_static("bar"))
+        );
+
+        server.finish()?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn p2_cli_serve_outgoing_body_config() -> Result<()> {
         let server = WasmtimeServe::new(P2_CLI_SERVE_ECHO_ENV_COMPONENT, |cmd| {
             cmd.arg("-Scli");
@@ -2312,43 +2390,101 @@ start a print 1234
 
     #[test]
     fn p2_cli_http_headers() -> Result<()> {
+        let td = tempfile::TempDir::new()?;
+        let cwasm = td.path().join("http_headers.cwasm");
+        let cwasm = cwasm.to_str().unwrap();
+        run_wasmtime(&["compile", P2_CLI_HTTP_HEADERS_COMPONENT, "-o", cwasm])?;
+        // p2 traps on too-many-fields/size-too-big, so expect error messages.
         for test in ["append", "append-empty", "append-same", "append-same-empty"] {
             let err = run_wasmtime(&[
                 "run",
-                "-Shttp",
+                "-Shttp,p3",
                 "-Smax-http-fields-size=1048576",
-                P2_CLI_HTTP_HEADERS_COMPONENT,
-                test,
+                "--allow-precompiled",
+                cwasm,
+                &format!("p2-{test}"),
             ])
             .unwrap_err();
             assert!(
                 err.to_string()
-                    .contains("Field size limit 1048576 exceeded")
-                    || err.to_string().contains("max size reached"),
+                    .contains("total size of fields exceeds limit")
+                    || err.to_string().contains("too many fields in the field map"),
                 "bad error message: {err:?}"
             );
 
             // gated by default too
-            let err =
-                run_wasmtime(&["run", "-Shttp", P2_CLI_HTTP_HEADERS_COMPONENT, test]).unwrap_err();
+            let err = run_wasmtime(&[
+                "run",
+                "-Shttp,p3",
+                "--allow-precompiled",
+                cwasm,
+                &format!("p2-{test}"),
+            ])
+            .unwrap_err();
             assert!(
-                err.to_string().contains("Field size limit"),
+                err.to_string()
+                    .contains("total size of fields exceeds limit"),
                 "bad error message: {err:?}"
             );
         }
 
-        // With an extremely large limit Wasmtime still shouldn't panic.
+        // With an extremely large limit Wasmtime still shouldn't panic (p2).
         let err = run_wasmtime(&[
             "run",
-            "-Shttp",
+            "-Shttp,p3",
             &format!("-Smax-http-fields-size={}", 1 << 30),
-            P2_CLI_HTTP_HEADERS_COMPONENT,
-            "append",
+            "--allow-precompiled",
+            cwasm,
+            "p2-append",
         ])
         .unwrap_err();
         assert!(
-            err.to_string().contains("max size reached"),
+            err.to_string().contains("too many fields in the field map"),
             "bad error message: {err:?}"
+        );
+
+        // p3 returns an error code instead of trapping, so the guest
+        // program exits successfully after receiving the error.
+        for test in ["append", "append-empty", "append-same", "append-same-empty"] {
+            let output = run_wasmtime(&[
+                "run",
+                "-Shttp,p3",
+                "-Smax-http-fields-size=1048576",
+                "--allow-precompiled",
+                cwasm,
+                &format!("p3-{test}"),
+            ])?;
+            assert!(
+                output.contains("error received"),
+                "p3-{test}: guest should have received an error"
+            );
+
+            // gated by default too
+            let output = run_wasmtime(&[
+                "run",
+                "-Shttp,p3",
+                "--allow-precompiled",
+                cwasm,
+                &format!("p3-{test}"),
+            ])?;
+            assert!(
+                output.contains("error received"),
+                "p3-{test} (default limit): guest should have received an error"
+            );
+        }
+
+        // With an extremely large limit Wasmtime still shouldn't panic (p3).
+        let output = run_wasmtime(&[
+            "run",
+            "-Shttp,p3",
+            &format!("-Smax-http-fields-size={}", 1 << 30),
+            "--allow-precompiled",
+            cwasm,
+            "p3-append",
+        ])?;
+        assert!(
+            output.contains("error received"),
+            "p3-append (large limit): guest should have received an error"
         );
         Ok(())
     }
@@ -2668,7 +2804,29 @@ start a print 1234
 
     #[test]
     fn p2_cli_many_resources() -> Result<()> {
-        let err = run_wasmtime(&["run", P2_CLI_MANY_RESOURCES_COMPONENT]).unwrap_err();
+        let err = run_wasmtime(&[
+            "run",
+            "-Smax-resources=100",
+            P2_CLI_MANY_RESOURCES_COMPONENT,
+        ])
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("resource table has no free keys"),
+            "bad error message: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn p3_cli_many_tasks() -> Result<()> {
+        let err = run_wasmtime(&[
+            "run",
+            "-Smax-resources=100",
+            "-Sp3",
+            "-Wcomponent-model-async",
+            dbg!(P3_CLI_MANY_TASKS_COMPONENT),
+        ])
+        .unwrap_err();
         assert!(
             err.to_string().contains("resource table has no free keys"),
             "bad error message: {err}"
@@ -2755,6 +2913,73 @@ start a print 1234
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn p3_cli_random_limits() -> Result<()> {
+        let c = P3_CLI_RANDOM_LIMITS_COMPONENT;
+
+        for rand in ["random", "insecure"] {
+            run_wasmtime(&["run", "-Sp3", "-Wcomponent-model-async", c, rand, "256"])?;
+            run_wasmtime(&[
+                "run",
+                "-Sp3",
+                "-Wcomponent-model-async",
+                "-Smax-random-size=255",
+                c,
+                rand,
+                "256",
+            ])?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn p3_cli_read_stdin() -> Result<()> {
+        let mut cmd = get_wasmtime_command()?;
+        let mut child = cmd
+            .arg("-Sp3")
+            .arg("-Wcomponent-model-async")
+            .arg(P3_CLI_READ_STDIN_COMPONENT)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"hello!").unwrap();
+        let output = child.wait_with_output()?;
+        println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn p3_cli_serve_post_return() -> Result<()> {
+        let server = WasmtimeServe::new(P3_CLI_SERVE_POST_RETURN_COMPONENT, move |cmd| {
+            cmd.arg("-Wcomponent-model-async");
+            cmd.arg("-Sp3,cli");
+            cmd.arg("--max-instance-reuse-count=1");
+        })?;
+        let resp = server
+            .send_request(
+                hyper::Request::builder()
+                    .uri("http://localhost/")
+                    .body(String::new())
+                    .context("failed to make request")?,
+            )
+            .await?;
+        assert!(resp.status().is_success());
+        assert!(resp.body().is_empty());
+
+        let (stdout, stderr) = server.finish()?;
+        println!("stdout: {stdout}");
+        println!("stderr: {stderr}");
+
+        assert!(stdout.contains("please see me"));
         Ok(())
     }
 }
@@ -3202,6 +3427,66 @@ fn wizer_components() -> Result<()> {
     assert!(!result.status.success());
     let result = wizen(&["-Scli"], component_with_wasi)?;
     assert!(result.status.success());
+
+    Ok(())
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore)]
+fn hot_blocks_fib() -> Result<()> {
+    // This test requires `perf` to be available and usable on the system. Skip
+    // if it is not installed or we do not have permissions to `perf record`.
+    let perf_check = Command::new("perf").args(&["record", "--", "ls"]).output();
+    if perf_check.is_err() || !perf_check.unwrap().status.success() {
+        eprintln!("skipping hot_blocks_fib: perf not available");
+        return Ok(());
+    }
+
+    let wasm = build_wasm("tests/all/cli_tests/fib.wat")?;
+    let output = run_wasmtime_for_output(
+        &[
+            "hot-blocks",
+            "-Ccache=n",
+            "--event",
+            "instructions",
+            "--percent",
+            "90",
+            wasm.path().to_str().unwrap(),
+        ],
+        None,
+    )?;
+
+    // The command should succeed.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // perf may fail due to permissions (perf_event_paranoid), which is OK
+        // in CI. Just skip in that case.
+        if stderr.contains("perf_event_open")
+            || stderr.contains("permission")
+            || stderr.contains("not permitted")
+        {
+            eprintln!("skipping hot_blocks_fib: perf permission denied");
+            return Ok(());
+        }
+        bail!(
+            "hot-blocks failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            stderr
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // The output should mention the function and basic block info.
+    // We don't assert exact percentages since they vary by run.
+    assert!(
+        stdout.contains("block") || stdout.contains("function"),
+        "expected hot-blocks output to contain block/function info, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("[Assembly]") || stdout.contains("total samples"),
+        "expected hot-blocks output to contain column headers or sample info, got:\n{stdout}"
+    );
 
     Ok(())
 }

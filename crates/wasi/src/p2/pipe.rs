@@ -165,7 +165,10 @@ impl AsyncReadStream {
                 use tokio::io::AsyncReadExt;
                 let mut buf = bytes::BytesMut::with_capacity(crate::MAX_READ_SIZE_ALLOC);
                 let sent = match reader.read_buf(&mut buf).await {
-                    Ok(nbytes) if nbytes == 0 => sender.send(Err(StreamError::Closed)).await,
+                    Ok(nbytes) if nbytes == 0 => {
+                        let _ = sender.send(Err(StreamError::Closed)).await;
+                        break;
+                    }
                     Ok(_) => sender.send(Ok(buf.freeze())).await,
                     Err(e) => {
                         sender
@@ -238,6 +241,11 @@ impl InputStream for AsyncReadStream {
             Ok(Err(e)) => {
                 self.closed = true;
                 Err(e)
+            }
+            // Note: if the stream is already closed it should return an error,
+            //       returning empty list would break the wasi contract (returning 0 and ready)
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) if self.closed => {
+                Err(StreamError::Closed)
             }
             Err(TryRecvError::Empty) => Ok(Bytes::new()),
             Err(TryRecvError::Disconnected) => Err(StreamError::Trap(format_err!(
@@ -382,6 +390,11 @@ mod test {
                 assert!(bs.is_empty());
                 resolves_immediately(reader.ready()).await;
                 assert!(matches!(reader.read(0), Err(StreamError::Closed)));
+
+                // Try again to make sure it keeps returning `StreamError::Closed`
+                resolves_immediately(reader.ready()).await;
+                assert!(matches!(reader.read(0), Err(StreamError::Closed)));
+                assert!(matches!(reader.read(0), Err(StreamError::Closed)));
             }
             res => panic!("unexpected: {res:?}"),
         }
@@ -445,6 +458,10 @@ mod test {
             }
             res => panic!("unexpected: {res:?}"),
         }
+
+        // Make sure it stays closed
+        resolves_immediately(reader.ready()).await;
+        assert!(matches!(reader.read(0), Err(StreamError::Closed)));
     }
 
     #[test_log::test(tokio::test(flavor = "multi_thread"))]

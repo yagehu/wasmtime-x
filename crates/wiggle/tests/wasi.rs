@@ -132,7 +132,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a, u32
         _memory: &mut GuestMemory<'_>,
         _fd: types::Fd,
         _fs_rights_base: types::Rights,
-        _fs_rights_inherting: types::Rights,
+        _fs_rights_inheriting: types::Rights,
     ) -> Result<()> {
         unimplemented!("fd_fdstat_set_rights")
     }
@@ -315,7 +315,7 @@ impl<'a> crate::wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiCtx<'a, u32
         _path: GuestPtr<str, u32>,
         _oflags: types::Oflags,
         _fs_rights_base: types::Rights,
-        _fs_rights_inherting: types::Rights,
+        _fs_rights_inheriting: types::Rights,
         _fdflags: types::Fdflags,
     ) -> Result<types::Fd> {
         unimplemented!("path_open")

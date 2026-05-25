@@ -2,16 +2,20 @@ use crate::prelude::*;
 use crate::runtime::component::concurrent::ConcurrentState;
 use crate::runtime::component::{HostResourceData, Instance};
 use crate::runtime::vm;
-#[cfg(feature = "component-model-async")]
-use crate::runtime::vm::VMStore;
 use crate::runtime::vm::component::{
     CallContext, ComponentInstance, HandleTable, OwnedComponentInstance,
 };
 use crate::store::{StoreData, StoreId, StoreOpaque};
 use crate::{AsContext, AsContextMut, Engine, Store, StoreContextMut};
 use core::pin::Pin;
-use wasmtime_environ::PrimaryMap;
 use wasmtime_environ::component::RuntimeComponentInstanceIndex;
+use wasmtime_environ::prelude::TryPrimaryMap;
+
+#[cfg(feature = "component-model-async")]
+use crate::{
+    component::ResourceTable,
+    runtime::vm::{VMStore, component::InstanceState},
+};
 
 /// Default amount of fuel allowed for all guest-to-host calls in the component
 /// model.
@@ -27,7 +31,7 @@ const DEFAULT_HOSTCALL_FUEL: usize = 128 << 20;
 pub struct ComponentStoreData {
     /// All component instances, in a similar manner to how core wasm instances
     /// are managed.
-    instances: PrimaryMap<ComponentInstanceId, Option<OwnedComponentInstance>>,
+    instances: TryPrimaryMap<ComponentInstanceId, Option<OwnedComponentInstance>>,
 
     /// Whether an instance belonging to this store has trapped.
     trapped: bool,
@@ -149,15 +153,10 @@ impl ComponentStoreData {
                 continue;
             };
 
-            assert!(
-                instance
-                    .get_mut()
-                    .instance_states()
-                    .0
-                    .iter_mut()
-                    .all(|(_, state)| state.handle_table().is_empty()
-                        && state.concurrent_state().pending_is_empty())
-            );
+            assert!(instance.get_mut().instance_states().0.iter_mut().all(
+                |(_, state): (_, &mut InstanceState)| state.handle_table().is_empty()
+                    && state.concurrent_state().pending_is_empty()
+            ));
         }
     }
 
@@ -257,11 +256,11 @@ impl StoreData {
     pub(crate) fn push_component_instance(
         &mut self,
         data: OwnedComponentInstance,
-    ) -> ComponentInstanceId {
+    ) -> Result<ComponentInstanceId, OutOfMemory> {
         let expected = data.get().id();
-        let ret = self.components.instances.push(Some(data));
+        let ret = self.components.instances.push(Some(data))?;
         assert_eq!(expected, ret);
-        ret
+        Ok(ret)
     }
 
     pub(crate) fn component_instance(&self, id: ComponentInstanceId) -> &ComponentInstance {
@@ -392,12 +391,13 @@ impl StoreOpaque {
         )
     }
 
-    pub(crate) fn enter_call_not_concurrent(&mut self) {
+    pub(crate) fn enter_call_not_concurrent(&mut self) -> Result<()> {
         let state = match &mut self.component_data_mut().task_state {
             ComponentTaskState::NotConcurrent(state) => state,
             ComponentTaskState::Concurrent(_) => unreachable!(),
         };
-        state.scopes.push(CallContext::default());
+        state.scopes.push(CallContext::default())?;
+        Ok(())
     }
 
     pub(crate) fn exit_call_not_concurrent(&mut self) {
@@ -414,6 +414,15 @@ impl StoreOpaque {
 
     pub(crate) fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.component_data_mut().hostcall_fuel = fuel;
+    }
+
+    #[cfg(feature = "component-model-async")]
+    fn concurrent_resource_table(&mut self) -> Option<&mut ResourceTable> {
+        if self.concurrency_support() {
+            Some(self.concurrent_state_mut().table())
+        } else {
+            None
+        }
     }
 }
 
@@ -455,6 +464,17 @@ impl<T> Store<T> {
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.as_context_mut().set_hostcall_fuel(fuel)
     }
+
+    /// Returns the underlying [`ResourceTable`] that the implementation of
+    /// concurrency in the component model is using.
+    ///
+    /// Returns `None` if [`Config::concurrency_support`] is disabled.
+    ///
+    /// [`Config::concurrency_support`]: crate::Config::concurrency_support
+    #[cfg(feature = "component-model-async")]
+    pub fn concurrent_resource_table(&mut self) -> Option<&mut ResourceTable> {
+        self.as_context_mut().0.concurrent_resource_table()
+    }
 }
 
 impl<T> StoreContextMut<'_, T> {
@@ -467,26 +487,30 @@ impl<T> StoreContextMut<'_, T> {
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.0.set_hostcall_fuel(fuel)
     }
+
+    /// See [`Store::concurrent_resource_table`].
+    #[cfg(feature = "component-model-async")]
+    pub fn concurrent_resource_table(&mut self) -> Option<&mut ResourceTable> {
+        self.0.concurrent_resource_table()
+    }
 }
 
 #[derive(Default)]
 pub struct ComponentTasksNotConcurrent {
-    scopes: Vec<CallContext>,
+    scopes: TryVec<CallContext>,
 }
 
 impl ComponentTaskState {
-    pub fn call_context(&mut self, id: u32) -> &mut CallContext {
+    pub fn call_context(&mut self, id: u32) -> Result<&mut CallContext> {
         match self {
-            ComponentTaskState::NotConcurrent(state) => &mut state.scopes[id as usize],
+            ComponentTaskState::NotConcurrent(state) => Ok(&mut state.scopes[id as usize]),
             ComponentTaskState::Concurrent(state) => state.call_context(id),
         }
     }
 
-    pub fn current_call_context_scope_id(&self) -> u32 {
+    pub fn current_call_context_scope_id(&self) -> Result<u32> {
         match self {
-            ComponentTaskState::NotConcurrent(state) => {
-                u32::try_from(state.scopes.len() - 1).unwrap()
-            }
+            ComponentTaskState::NotConcurrent(state) => Ok(u32::try_from(state.scopes.len() - 1)?),
             ComponentTaskState::Concurrent(state) => state.current_call_context_scope_id(),
         }
     }
