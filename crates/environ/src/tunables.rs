@@ -192,6 +192,9 @@ define_tunables! {
         /// Whether `metadata.code.branch_hint` sections are parsed and used to
         /// mark cold blocks during compilation.
         pub branch_hinting: bool,
+
+        /// For research only. Extremely dangerous.
+        pub unsafe_omit_bounds_checks: Option<OmitBoundsChecks>,
     }
 
     pub struct ConfigTunables {
@@ -278,6 +281,8 @@ impl Tunables {
             metadata_for_internal_asserts: false,
             metadata_for_gc_heap_corruption: true,
             branch_hinting: false,
+
+            unsafe_omit_bounds_checks: None,
         }
     }
 
@@ -631,3 +636,13 @@ macro_rules! define_operator_cost {
 }
 
 wasmparser::for_each_operator!(define_operator_cost);
+
+/// For research purpose only. What kinds of bounds checks should we omit.
+#[derive(Copy, Clone, Hash, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum OmitBoundsChecks {
+    /// Omit all bounds checks.
+    All,
+
+    /// Only omit the full dynamic memory bounds checks.
+    Dynamic,
+}

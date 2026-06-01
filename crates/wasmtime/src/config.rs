@@ -7,7 +7,9 @@ use core::str::FromStr;
 #[cfg(any(feature = "cranelift", feature = "winch"))]
 use std::path::Path;
 pub use wasmparser::WasmFeatures;
-use wasmtime_environ::{ConfigTunables, OperatorCost, OperatorCostStrategy, TripleExt, Tunables};
+use wasmtime_environ::{
+    ConfigTunables, OmitBoundsChecks, OperatorCost, OperatorCostStrategy, TripleExt, Tunables,
+};
 
 #[cfg(feature = "runtime")]
 use crate::memory::MemoryCreator;
@@ -1177,6 +1179,15 @@ impl Config {
     /// [proposal]: https://github.com/webassembly/memory64
     pub fn wasm_memory64(&mut self, enable: bool) -> &mut Self {
         self.wasm_features(WasmFeatures::MEMORY64, enable);
+        self
+    }
+
+    /// Extremely dangerous.
+    pub fn unsafe_omit_bounds_checks(
+        &mut self,
+        unsafe_omit_bounds_checks: Option<OmitBoundsChecks>,
+    ) -> &mut Self {
+        self.tunables.unsafe_omit_bounds_checks = Some(unsafe_omit_bounds_checks);
         self
     }
 

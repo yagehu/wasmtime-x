@@ -38,7 +38,7 @@ impl CodegenSettings {
             wasmtime,
             tracing: tracing.clone(),
             mutable,
-            abi: abi,
+            abi,
         })
     }
     pub fn get_async(&self, module: &Module, func: &InterfaceFunc) -> Asyncness {
