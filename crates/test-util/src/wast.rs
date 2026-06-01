@@ -40,6 +40,7 @@ pub fn find_tests(root: &Path) -> Result<Vec<WastTest>> {
         &spec_tests,
         &FindConfig::Infer(spec_test_config),
     )
+    .context("Do you need to `git submodule update --init`?")
     .with_context(|| format!("failed to add tests from `{}`", spec_tests.display()))?;
 
     let misc_tests = root.join("tests/misc_testsuite");
@@ -52,6 +53,7 @@ pub fn find_tests(root: &Path) -> Result<Vec<WastTest>> {
         &cm_tests,
         &FindConfig::Infer(component_test_config),
     )
+    .context("Do you need to `git submodule update --init`?")
     .with_context(|| format!("failed to add tests from `{}`", cm_tests.display()))?;
 
     // Temporarily work around upstream tests that fail in unexpected ways (e.g.
@@ -273,6 +275,7 @@ macro_rules! foreach_config_option {
             tail_call
             extended_const
             wide_arithmetic
+            branch_hinting
             hogs_memory
             nan_canonicalization
             component_model_async
@@ -655,6 +658,7 @@ impl WastTest {
                         "misc_testsuite/winch/issue-10331.wast",
                         "misc_testsuite/winch/replace_lane.wast",
                         "misc_testsuite/simd/riscv64-replicated-imm5-works.wast",
+                        "misc_testsuite/simd/v128-equal.wast",
                         "spec_testsuite/simd_align.wast",
                         "spec_testsuite/simd_boolean.wast",
                         "spec_testsuite/simd_conversions.wast",
