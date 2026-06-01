@@ -31,6 +31,7 @@ use cranelift_codegen::{
     ir::{self, InstBuilder, RelSourceLoc, condcodes::IntCC},
 };
 use cranelift_frontend::FunctionBuilder;
+use wasmtime_environ::OmitBoundsChecks;
 
 /// The kind of bounds check to perform when accessing a Wasm linear memory or
 /// GC heap.
@@ -262,6 +263,16 @@ fn bounds_check_field_access(
         return Unreachable;
     }
 
+    if let Some(OmitBoundsChecks::All) = env.compiler().tunables().unsafe_omit_bounds_checks {
+        return Reachable(compute_addr(
+            &mut builder.cursor(),
+            heap,
+            env.pointer_type(),
+            index,
+            offset,
+        ));
+    }
+
     // Special case for when we can completely omit explicit
     // bounds checks for 32-bit memories.
     //
@@ -461,6 +472,16 @@ fn bounds_check_field_access(
             oob_behavior,
             oob,
             trap,
+        ));
+    }
+
+    if let Some(OmitBoundsChecks::Dynamic) = env.compiler().tunables().unsafe_omit_bounds_checks {
+        return Reachable(compute_addr(
+            &mut builder.cursor(),
+            heap,
+            env.pointer_type(),
+            index,
+            offset,
         ));
     }
 

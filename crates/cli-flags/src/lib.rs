@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 use wasmtime::{Config, Result, WasmBacktraceDetails, bail, error::Context as _};
+use wasmtime_environ::OmitBoundsChecks;
 
 pub mod opt;
 
@@ -596,6 +597,19 @@ wasmtime_option_group! {
     }
 }
 
+wasmtime_option_group! {
+    #[derive(PartialEq, Clone, Deserialize)]
+    #[serde(rename_all = "kebab-case", deny_unknown_fields)]
+    pub struct ExperimentalOptions {
+        /// Extremely dangerous. Omit bounds checks in the generated code.
+        pub unsafe_omit_bounds_checks: Option<OmitBoundsChecks>,
+    }
+
+    enum Experimental {
+        ...
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WasiNnGraph {
     pub format: String,
@@ -646,6 +660,11 @@ pub struct CommonOptions {
     #[serde(skip)]
     wasi_raw: Vec<opt::CommaSeparated<Wasi>>,
 
+    /// Options for configuring experimental research features, `-X` to see all.
+    #[arg(short = 'X', long = "experimental", value_name = "KEY[=VAL[,..]]")]
+    #[serde(skip)]
+    experimental_raw: Vec<opt::CommaSeparated<Experimental>>,
+
     /// Options to enable and configure execution recording, `-R help` to see all.
     ///
     /// Generates a serialized trace of the Wasm module execution that captures all
@@ -683,6 +702,10 @@ pub struct CommonOptions {
     #[arg(skip)]
     #[serde(rename = "wasi", default)]
     pub wasi: WasiOptions,
+
+    #[arg(skip)]
+    #[serde(rename = "experimental", default)]
+    pub experimental: ExperimentalOptions,
 
     #[arg(skip)]
     #[serde(rename = "record", default)]
@@ -734,6 +757,7 @@ impl CommonOptions {
             debug_raw: Vec::new(),
             wasm_raw: Vec::new(),
             wasi_raw: Vec::new(),
+            experimental_raw: Vec::new(),
             record_raw: Vec::new(),
             configured: true,
             opts: Default::default(),
@@ -741,6 +765,7 @@ impl CommonOptions {
             debug: Default::default(),
             wasm: Default::default(),
             wasi: Default::default(),
+            experimental: Default::default(),
             record: Default::default(),
             target: None,
             config: None,
@@ -767,6 +792,7 @@ impl CommonOptions {
         self.wasm.configure_with(&self.wasm_raw);
         self.wasi.configure_with(&self.wasi_raw);
         self.record.configure_with(&self.record_raw);
+        self.experimental.configure_with(&self.experimental_raw);
         Ok(())
     }
 
@@ -1252,6 +1278,8 @@ impl CommonOptions {
             }
         }
 
+        config.unsafe_omit_bounds_checks(self.experimental.unsafe_omit_bounds_checks);
+
         Ok(())
     }
 
@@ -1408,6 +1436,8 @@ impl fmt::Display for CommonOptions {
             wasm,
             wasi_raw,
             wasi,
+            experimental_raw,
+            experimental,
             record_raw,
             record,
             configured,
@@ -1427,6 +1457,7 @@ impl fmt::Display for CommonOptions {
         let wasm_flags;
         let debug_flags;
         let record_flags;
+        let experimental_flags;
 
         if *configured {
             codegen_flags = codegen.to_options();
@@ -1435,6 +1466,7 @@ impl fmt::Display for CommonOptions {
             wasm_flags = wasm.to_options();
             opts_flags = opts.to_options();
             record_flags = record.to_options();
+            experimental_flags = experimental.to_options();
         } else {
             codegen_flags = codegen_raw
                 .iter()
@@ -1446,6 +1478,11 @@ impl fmt::Display for CommonOptions {
             wasm_flags = wasm_raw.iter().flat_map(|t| t.0.iter()).cloned().collect();
             opts_flags = opts_raw.iter().flat_map(|t| t.0.iter()).cloned().collect();
             record_flags = record_raw
+                .iter()
+                .flat_map(|t| t.0.iter())
+                .cloned()
+                .collect();
+            experimental_flags = experimental_raw
                 .iter()
                 .flat_map(|t| t.0.iter())
                 .cloned()
@@ -1469,6 +1506,9 @@ impl fmt::Display for CommonOptions {
         }
         for flag in record_flags {
             write!(f, "-R{flag} ")?;
+        }
+        for flag in experimental_flags {
+            write!(f, "-X{flag} ")?;
         }
 
         Ok(())

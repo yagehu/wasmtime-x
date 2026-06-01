@@ -2677,7 +2677,7 @@ impl wasi_snapshot_preview1::WasiSnapshotPreview1 for WasiP1Ctx {
         let rand = self
             .wasi
             .random
-            .get_random_bytes(buf_len.into())
+            .get_random_bytes(buf_len)
             .context("failed to call `get-random-bytes`")
             .map_err(types::Error::trap)?;
         write_bytes(memory, buf, &rand)?;

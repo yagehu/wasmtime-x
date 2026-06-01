@@ -647,6 +647,29 @@ impl WasmtimeOptionValue for KeyValuePair {
     }
 }
 
+impl WasmtimeOptionValue for wasmtime_environ::OmitBoundsChecks {
+    const VAL_HELP: &'static str = "=all|dynamic";
+
+    fn parse(val: Option<&str>) -> Result<Self> {
+        match String::parse(val)?.as_str() {
+            "all" => Ok(wasmtime_environ::OmitBoundsChecks::All),
+            "dynamic" => Ok(wasmtime_environ::OmitBoundsChecks::Dynamic),
+            other => {
+                bail!(
+                    "unknown bounds checks omission strategy `{other}`, only all,dynamic accepted"
+                )
+            }
+        }
+    }
+
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            wasmtime_environ::OmitBoundsChecks::All => f.write_str("all"),
+            wasmtime_environ::OmitBoundsChecks::Dynamic => f.write_str("dynamic"),
+        }
+    }
+}
+
 pub trait OptionContainer<T> {
     fn push(&mut self, val: T);
     fn get<'a>(&'a self) -> impl Iterator<Item = &'a T>

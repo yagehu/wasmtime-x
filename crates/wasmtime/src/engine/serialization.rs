@@ -346,6 +346,8 @@ impl Metadata<'_> {
             // Only affects cold-block layout; a compiled artifact loads into an
             // engine configured either way.
             branch_hinting: _,
+
+            unsafe_omit_bounds_checks,
         } = self.tunables;
 
         Self::check_collector(collector, other.collector)?;
@@ -432,6 +434,10 @@ impl Metadata<'_> {
             "GC heap guard size",
         )?;
         Self::check_bool(gc_heap_may_move, other.gc_heap_may_move, "GC heap may move")?;
+        Self::check_unsafe_omit_bounds_checks(
+            unsafe_omit_bounds_checks,
+            other.unsafe_omit_bounds_checks,
+        )?;
 
         Ok(())
     }
@@ -488,6 +494,28 @@ impl Metadata<'_> {
             }
             wasmtime_environ::Inlining::Intrinsics => "with intrinsic inlining",
             wasmtime_environ::Inlining::InterModule => "with inter-module inlining",
+        };
+
+        let module = desc(module);
+        let host = desc(host);
+
+        bail!("module was compiled {module} however the host is configured {host}")
+    }
+
+    fn check_unsafe_omit_bounds_checks(
+        module: Option<wasmtime_environ::OmitBoundsChecks>,
+        host: Option<wasmtime_environ::OmitBoundsChecks>,
+    ) -> Result<()> {
+        if module == host {
+            return Ok(());
+        }
+
+        let desc = |cfg| match cfg {
+            None => "without bounds checks omission",
+            Some(wasmtime_environ::OmitBoundsChecks::All) => "with all bounds checks omission",
+            Some(wasmtime_environ::OmitBoundsChecks::Dynamic) => {
+                "with dynamic bounds checks omission"
+            }
         };
 
         let module = desc(module);
