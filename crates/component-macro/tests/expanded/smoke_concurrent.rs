@@ -165,7 +165,7 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            D: imports::HostWithStore + Send,
+            D: imports::HostWithStore<T> + Send,
             for<'a> D::Data<'a>: imports::Host + Send,
             T: 'static + Send,
         {
@@ -178,9 +178,9 @@ const _: () = {
 pub mod imports {
     #[allow(unused_imports)]
     use wasmtime::component::__internal::Box;
-    pub trait HostWithStore: wasmtime::component::HasData + Send {
-        fn y<T: Send>(
-            accessor: &wasmtime::component::Accessor<T, Self>,
+    pub trait HostWithStore<T>: wasmtime::component::HasData + Send {
+        fn y(
+            host: wasmtime::component::Access<T, Self>,
         ) -> impl ::core::future::Future<Output = ()> + Send;
     }
     pub trait Host: Send {}
@@ -190,16 +190,17 @@ pub mod imports {
         host_getter: fn(&mut T) -> D::Data<'_>,
     ) -> wasmtime::Result<()>
     where
-        D: HostWithStore,
+        D: HostWithStore<T>,
         for<'a> D::Data<'a>: Host,
         T: 'static + Send,
     {
-        inst.func_wrap_concurrent(
+        inst.func_wrap_async(
             "y",
-            move |caller: &wasmtime::component::Accessor<T>, (): ()| {
-                wasmtime::component::__internal::Box::pin(async move {
-                    let host = &caller.with_getter(host_getter);
-                    let r = <D as HostWithStore>::y(host).await;
+            move |mut caller: wasmtime::StoreContextMut<'_, T>, (): ()| {
+                wasmtime::component::__internal::Box::new(async move {
+                    let access_cx = wasmtime::AsContextMut::as_context_mut(&mut caller);
+                    let host = wasmtime::component::Access::new(access_cx, host_getter);
+                    let r = <D as HostWithStore<T>>::y(host).await;
                     Ok(r)
                 })
             },
@@ -211,11 +212,11 @@ pub mod imports {
         host_getter: fn(&mut T) -> D::Data<'_>,
     ) -> wasmtime::Result<()>
     where
-        D: HostWithStore,
+        D: HostWithStore<T>,
         for<'a> D::Data<'a>: Host,
         T: 'static + Send,
     {
         let mut inst = linker.instance("imports")?;
-        add_to_linker_instance(&mut inst, host_getter)
+        add_to_linker_instance::<T, D>(&mut inst, host_getter)
     }
 }

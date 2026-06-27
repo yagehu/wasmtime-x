@@ -82,6 +82,10 @@ define_tunables! {
         /// the guest.
         pub debug_guest: bool,
 
+        /// Whether we are enabling native symbols to get inserted into the
+        /// final `*.cwasm`.
+        pub debug_symbols: bool,
+
         /// Whether or not to retain DWARF sections in compiled modules.
         pub parse_wasm_debuginfo: bool,
 
@@ -194,7 +198,7 @@ define_tunables! {
         pub branch_hinting: bool,
 
         /// For research only. Extremely dangerous.
-        pub unsafe_omit_bounds_checks: Option<OmitBoundsChecks>,
+        pub unsafe_omit_bounds_checks: OmitBoundsChecks,
     }
 
     pub struct ConfigTunables {
@@ -281,8 +285,8 @@ impl Tunables {
             metadata_for_internal_asserts: false,
             metadata_for_gc_heap_corruption: true,
             branch_hinting: false,
-
-            unsafe_omit_bounds_checks: None,
+            unsafe_omit_bounds_checks: OmitBoundsChecks::None,
+            debug_symbols: true,
         }
     }
 
@@ -640,6 +644,9 @@ wasmparser::for_each_operator!(define_operator_cost);
 /// For research purpose only. What kinds of bounds checks should we omit.
 #[derive(Copy, Clone, Hash, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum OmitBoundsChecks {
+    /// Don't omit any bounds checks.
+    None,
+
     /// Omit all bounds checks.
     All,
 

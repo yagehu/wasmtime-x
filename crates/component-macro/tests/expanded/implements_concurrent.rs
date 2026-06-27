@@ -165,7 +165,8 @@ const _: () = {
             host_getter: fn(&mut T) -> D::Data<'_>,
         ) -> wasmtime::Result<()>
         where
-            D: foo::foo::store::HostWithStore + foo::foo::store::HostWithStore + Send,
+            D: foo::foo::store::HostWithStore<T> + foo::foo::store::HostWithStore<T>
+                + Send,
             for<'a> D::Data<'a>: foo::foo::store::Host + foo::foo::store::Host + Send,
             T: 'static + Send,
         {
@@ -187,15 +188,15 @@ pub mod foo {
         pub mod store {
             #[allow(unused_imports)]
             use wasmtime::component::__internal::Box;
-            pub trait HostWithStore: wasmtime::component::HasData + Send {
-                fn get<T: Send>(
-                    accessor: &wasmtime::component::Accessor<T, Self>,
+            pub trait HostWithStore<T>: wasmtime::component::HasData + Send {
+                fn get(
+                    host: wasmtime::component::Access<T, Self>,
                     key: wasmtime::component::__internal::String,
                 ) -> impl ::core::future::Future<
                     Output = Option<wasmtime::component::__internal::String>,
                 > + Send;
-                fn set<T: Send>(
-                    accessor: &wasmtime::component::Accessor<T, Self>,
+                fn set(
+                    host: wasmtime::component::Access<T, Self>,
                     key: wasmtime::component::__internal::String,
                     value: wasmtime::component::__internal::String,
                 ) -> impl ::core::future::Future<Output = ()> + Send;
@@ -207,27 +208,33 @@ pub mod foo {
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostWithStore,
+                D: HostWithStore<T>,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
-                inst.func_wrap_concurrent(
+                inst.func_wrap_async(
                     "get",
                     move |
-                        caller: &wasmtime::component::Accessor<T>,
+                        mut caller: wasmtime::StoreContextMut<'_, T>,
                         (arg0,): (wasmtime::component::__internal::String,)|
                     {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let host = &caller.with_getter(host_getter);
-                            let r = <D as HostWithStore>::get(host, arg0).await;
+                        wasmtime::component::__internal::Box::new(async move {
+                            let access_cx = wasmtime::AsContextMut::as_context_mut(
+                                &mut caller,
+                            );
+                            let host = wasmtime::component::Access::new(
+                                access_cx,
+                                host_getter,
+                            );
+                            let r = <D as HostWithStore<T>>::get(host, arg0).await;
                             Ok((r,))
                         })
                     },
                 )?;
-                inst.func_wrap_concurrent(
+                inst.func_wrap_async(
                     "set",
                     move |
-                        caller: &wasmtime::component::Accessor<T>,
+                        mut caller: wasmtime::StoreContextMut<'_, T>,
                         (
                             arg0,
                             arg1,
@@ -236,9 +243,15 @@ pub mod foo {
                             wasmtime::component::__internal::String,
                         )|
                     {
-                        wasmtime::component::__internal::Box::pin(async move {
-                            let host = &caller.with_getter(host_getter);
-                            let r = <D as HostWithStore>::set(host, arg0, arg1).await;
+                        wasmtime::component::__internal::Box::new(async move {
+                            let access_cx = wasmtime::AsContextMut::as_context_mut(
+                                &mut caller,
+                            );
+                            let host = wasmtime::component::Access::new(
+                                access_cx,
+                                host_getter,
+                            );
+                            let r = <D as HostWithStore<T>>::set(host, arg0, arg1).await;
                             Ok(r)
                         })
                     },
@@ -250,12 +263,12 @@ pub mod foo {
                 host_getter: fn(&mut T) -> D::Data<'_>,
             ) -> wasmtime::Result<()>
             where
-                D: HostWithStore,
+                D: HostWithStore<T>,
                 for<'a> D::Data<'a>: Host,
                 T: 'static + Send,
             {
                 let mut inst = linker.instance("foo:foo/store")?;
-                add_to_linker_instance(&mut inst, host_getter)
+                add_to_linker_instance::<T, D>(&mut inst, host_getter)
             }
         }
     }

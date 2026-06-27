@@ -90,6 +90,9 @@ pub(crate) mod interpreter_disabled;
 #[cfg(not(feature = "pulley"))]
 pub(crate) use interpreter_disabled as interpreter;
 
+#[cfg(feature = "component-model-async")]
+pub(crate) use sys::{component_async_tls_get, component_async_tls_set};
+
 #[cfg(feature = "debug-builtins")]
 pub use wasmtime_jit_debug::gdb_jit_int::GdbJitImageRegistration;
 
@@ -103,8 +106,7 @@ pub use crate::runtime::vm::instance::{
 };
 #[cfg(feature = "pooling-allocator")]
 pub use crate::runtime::vm::instance::{
-    InstanceLimits, PoolConcurrencyLimitError, PoolingAllocatorMetrics, PoolingInstanceAllocator,
-    PoolingInstanceAllocatorConfig,
+    PoolConcurrencyLimitError, PoolingAllocatorMetrics, PoolingInstanceAllocator,
 };
 pub use crate::runtime::vm::interpreter::*;
 pub use crate::runtime::vm::memory::{
@@ -124,6 +126,8 @@ pub use crate::runtime::vm::throw::*;
 pub use crate::runtime::vm::traphandlers::*;
 #[cfg(feature = "component-model")]
 pub use crate::runtime::vm::vmcontext::VMArrayCallFunction;
+#[cfg(feature = "component-model-async")]
+pub use crate::runtime::vm::vmcontext::VMLazyThread;
 pub use crate::runtime::vm::vmcontext::{
     VMArrayCallHostFuncContext, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
     VMGlobalImport, VMGlobalKind, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext,
@@ -217,7 +221,9 @@ pub unsafe trait VMStore: 'static {
 
     /// Metadata required for resources for the component model.
     #[cfg(feature = "component-model")]
-    fn component_task_state_mut(&mut self) -> &mut crate::component::store::ComponentTaskState;
+    fn component_task_state_mut(
+        &mut self,
+    ) -> Result<&mut crate::component::store::ComponentTaskState>;
 
     #[cfg(feature = "component-model-async")]
     fn component_async_store(

@@ -9,7 +9,9 @@ use crate::component::{
     AsAccessor, ComponentInstanceId, ComponentType, FutureAny, Instance, Lift, Lower, StreamAny,
     Val, WasmList,
 };
+use crate::prelude::*;
 use crate::store::{StoreOpaque, StoreToken};
+use crate::try_mutex::{TryMutex, TryMutexGuard};
 use crate::vm::component::{ComponentInstance, HandleTable, TransmitLocalState};
 use crate::vm::{AlwaysMut, VMStore};
 use crate::{AsContext, AsContextMut, StoreContextMut, ValRaw};
@@ -17,7 +19,9 @@ use crate::{
     Error, Result, Trap, bail, bail_bug, ensure,
     error::{Context as _, format_err},
 };
+use alloc::sync::Arc;
 use buffers::{Extender, SliceBuffer, UntypedWriteBuffer};
+use core::any::{Any, TypeId};
 use core::fmt;
 use core::future;
 use core::iter;
@@ -28,12 +32,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker, ready};
 use futures::channel::oneshot;
 use futures::{FutureExt as _, stream};
-use std::any::{Any, TypeId};
-use std::boxed::Box;
-use std::io::Cursor;
-use std::string::String;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::vec::Vec;
 use wasmtime_environ::component::{
     CanonicalAbiInfo, ComponentTypes, InterfaceType, OptionsIndex, RuntimeComponentInstanceIndex,
     TypeComponentGlobalErrorContextTableIndex, TypeComponentLocalErrorContextTableIndex,
@@ -186,7 +184,7 @@ impl PartialEq<u32> for ItemCount {
 }
 
 impl PartialOrd<u32> for ItemCount {
-    fn partial_cmp(&self, other: &u32) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &u32) -> Option<core::cmp::Ordering> {
         self.raw.partial_cmp(other)
     }
 }
@@ -337,11 +335,25 @@ pub(super) struct FlatAbi {
     pub(super) align: u32,
 }
 
+struct HostBuffer<'a> {
+    dst: &'a mut Vec<u8>,
+    marked_written: &'a mut usize,
+}
+
+impl HostBuffer<'_> {
+    fn reborrow(&mut self) -> HostBuffer<'_> {
+        HostBuffer {
+            dst: &mut *self.dst,
+            marked_written: &mut *self.marked_written,
+        }
+    }
+}
+
 /// Represents the buffer for a host- or guest-initiated stream read.
 pub struct Destination<'a, T, B> {
     id: TableId<TransmitState>,
     buffer: &'a mut B,
-    host_buffer: Option<&'a mut Cursor<Vec<u8>>>,
+    host_buffer: Option<HostBuffer<'a>>,
     _phantom: PhantomData<fn() -> T>,
 }
 
@@ -351,7 +363,7 @@ impl<'a, T, B> Destination<'a, T, B> {
         Destination {
             id: self.id,
             buffer: &mut *self.buffer,
-            host_buffer: self.host_buffer.as_deref_mut(),
+            host_buffer: self.host_buffer.as_mut().map(|b| b.reborrow()),
             _phantom: PhantomData,
         }
     }
@@ -405,7 +417,7 @@ impl<'a, T, B> Destination<'a, T, B> {
     }
 
     fn remaining_(&self, store: &mut StoreOpaque) -> Result<Option<usize>> {
-        let transmit = store.concurrent_state_mut().get_mut(self.id)?;
+        let transmit = store.concurrent_state_mut()?.get_mut(self.id)?;
 
         if let &ReadState::GuestReady { count, .. } = &transmit.read {
             let &WriteState::HostReady { guest_offset, .. } = &transmit.write else {
@@ -435,11 +447,9 @@ impl<'a, B> Destination<'a, u8, B> {
         store: StoreContextMut<'a, D>,
         capacity: usize,
     ) -> DirectDestination<'a, D> {
-        if let Some(buffer) = self.host_buffer.as_deref_mut() {
-            buffer.set_position(0);
-            if buffer.get_mut().is_empty() {
-                buffer.get_mut().resize(capacity, 0);
-            }
+        if let Some(buffer) = &mut self.host_buffer {
+            *buffer.marked_written = 0;
+            buffer.dst.resize(capacity, 0);
         }
 
         DirectDestination {
@@ -454,10 +464,11 @@ impl<'a, B> Destination<'a, u8, B> {
 /// writer's buffer.
 pub struct DirectDestination<'a, D: 'static> {
     id: TableId<TransmitState>,
-    host_buffer: Option<&'a mut Cursor<Vec<u8>>>,
+    host_buffer: Option<HostBuffer<'a>>,
     store: StoreContextMut<'a, D>,
 }
 
+#[cfg(feature = "std")]
 impl<D: 'static> std::io::Write for DirectDestination<'_, D> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let rem = self.remaining();
@@ -482,14 +493,14 @@ impl<D: 'static> DirectDestination<'_, D> {
     }
 
     fn remaining_(&mut self) -> Result<&mut [u8]> {
-        if let Some(buffer) = self.host_buffer.as_deref_mut() {
-            return Ok(buffer.get_mut());
+        if let Some(buffer) = self.host_buffer.as_mut() {
+            return Ok(buffer.dst);
         }
         let transmit = self
             .store
             .as_context_mut()
             .0
-            .concurrent_state_mut()
+            .concurrent_state_mut()?
             .get_mut(self.id)?;
 
         let &ReadState::GuestReady {
@@ -531,21 +542,16 @@ impl<D: 'static> DirectDestination<'_, D> {
     }
 
     fn mark_written_(&mut self, count: usize) -> Result<()> {
-        if let Some(buffer) = self.host_buffer.as_deref_mut() {
-            buffer.set_position(
-                // Note that these `.unwrap`s are documented panic conditions of
-                // `mark_written`.
-                buffer
-                    .position()
-                    .checked_add(u64::try_from(count).unwrap())
-                    .unwrap(),
-            );
+        if let Some(buffer) = self.host_buffer.as_mut() {
+            // Note that this `.unwrap` is a documented panic condition of
+            // `mark_written`.
+            *buffer.marked_written = buffer.marked_written.checked_add(count).unwrap();
         } else {
             let transmit = self
                 .store
                 .as_context_mut()
                 .0
-                .concurrent_state_mut()
+                .concurrent_state_mut()?
                 .get_mut(self.id)?;
 
             let ReadState::GuestReady {
@@ -824,10 +830,10 @@ where
     }
 }
 
-#[cfg(feature = "component-model-async-bytes")]
+#[cfg(feature = "component-model-bytes")]
 impl<D> StreamProducer<D> for bytes::Bytes {
     type Item = u8;
-    type Buffer = Cursor<Self>;
+    type Buffer = Self;
 
     fn poll_produce<'a>(
         self: Pin<&mut Self>,
@@ -836,15 +842,15 @@ impl<D> StreamProducer<D> for bytes::Bytes {
         mut dst: Destination<'a, Self::Item, Self::Buffer>,
         _: bool,
     ) -> Poll<Result<StreamResult>> {
-        dst.set_buffer(Cursor::new(mem::take(self.get_mut())));
+        dst.set_buffer(mem::take(self.get_mut()));
         Poll::Ready(Ok(StreamResult::Dropped))
     }
 }
 
-#[cfg(feature = "component-model-async-bytes")]
+#[cfg(feature = "component-model-bytes")]
 impl<D> StreamProducer<D> for bytes::BytesMut {
     type Item = u8;
-    type Buffer = Cursor<Self>;
+    type Buffer = Self;
 
     fn poll_produce<'a>(
         self: Pin<&mut Self>,
@@ -853,7 +859,7 @@ impl<D> StreamProducer<D> for bytes::BytesMut {
         mut dst: Destination<'a, Self::Item, Self::Buffer>,
         _: bool,
     ) -> Poll<Result<StreamResult>> {
-        dst.set_buffer(Cursor::new(mem::take(self.get_mut())));
+        dst.set_buffer(mem::take(self.get_mut()));
         Poll::Ready(Ok(StreamResult::Dropped))
     }
 }
@@ -884,7 +890,7 @@ impl<'a, T> Source<'a, T> {
             buffer.move_from(*input, count);
         } else {
             let store = store.as_context_mut();
-            let transmit = store.0.concurrent_state_mut().get_mut(self.id)?;
+            let transmit = store.0.concurrent_state_mut()?.get_mut(self.id)?;
 
             let &ReadState::HostReady { guest_offset, .. } = &transmit.read else {
                 bail_bug!("expected ReadState::HostReady");
@@ -913,7 +919,7 @@ impl<'a, T> Source<'a, T> {
                 count.as_usize() - guest_offset.as_usize(),
             )?;
 
-            let transmit = store.0.concurrent_state_mut().get_mut(self.id)?;
+            let transmit = store.0.concurrent_state_mut()?.get_mut(self.id)?;
 
             let ReadState::HostReady { guest_offset, .. } = &mut transmit.read else {
                 bail_bug!("expected ReadState::HostReady");
@@ -941,7 +947,7 @@ impl<'a, T> Source<'a, T> {
     where
         T: 'static,
     {
-        let transmit = store.concurrent_state_mut().get_mut(self.id)?;
+        let transmit = store.concurrent_state_mut()?.get_mut(self.id)?;
 
         if let &WriteState::GuestReady { count, .. } = &transmit.write {
             let &ReadState::HostReady { guest_offset, .. } = &transmit.read else {
@@ -976,6 +982,7 @@ pub struct DirectSource<'a, D: 'static> {
     store: StoreContextMut<'a, D>,
 }
 
+#[cfg(feature = "std")]
 impl<D: 'static> std::io::Read for DirectSource<'_, D> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let rem = self.remaining();
@@ -1003,7 +1010,7 @@ impl<D: 'static> DirectSource<'_, D> {
             .store
             .as_context_mut()
             .0
-            .concurrent_state_mut()
+            .concurrent_state_mut()?
             .get_mut(self.id)?;
 
         let &WriteState::GuestReady {
@@ -1054,7 +1061,7 @@ impl<D: 'static> DirectSource<'_, D> {
             .store
             .as_context_mut()
             .0
-            .concurrent_state_mut()
+            .concurrent_state_mut()?
             .get_mut(self.id)?;
 
         let WriteState::GuestReady {
@@ -1485,24 +1492,8 @@ pub(super) fn lift_index_to_future(
 ) -> Result<TableId<TransmitHandle>> {
     match ty {
         InterfaceType::Future(src) => {
-            let handle_table = cx
-                .instance_mut()
-                .table_for_transmit(TransmitIndex::Future(src));
-            let (rep, is_done) = handle_table.future_remove_readable(src, index)?;
-            if is_done {
-                bail!("cannot lift future after being notified that the writable end dropped");
-            }
-            let id = TableId::<TransmitHandle>::new(rep);
-            let concurrent_state = cx.concurrent_state_mut();
-            let future = concurrent_state.get_mut(id)?;
-            future.common.handle = None;
-            let state = future.state;
-
-            if concurrent_state.get_mut(state)?.done {
-                bail!("cannot lift future after previous read succeeded");
-            }
-
-            Ok(id)
+            let (state, instance) = cx.concurrent_state_and_instance_mut();
+            lift_index_to_transmit(instance, state, TransmitIndex::Future(src), index)
         }
         _ => func::bad_type_info(),
     }
@@ -1516,18 +1507,8 @@ pub(super) fn lower_future_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Future(dst) => {
-            let concurrent_state = cx.store.0.concurrent_state_mut();
-            let state = concurrent_state.get_mut(id)?.state;
-            let rep = concurrent_state.get_mut(state)?.read_handle.rep();
-
-            let handle = cx
-                .instance_mut()
-                .table_for_transmit(TransmitIndex::Future(dst))
-                .future_insert_read(dst, rep)?;
-
-            cx.store.0.concurrent_state_mut().get_mut(id)?.common.handle = Some(handle);
-
-            Ok(handle)
+            cx.instance_handle()
+                .lower_transmit_to_index(cx.store.0, TransmitIndex::Future(dst), id)
         }
         _ => func::bad_type_info(),
     }
@@ -1740,7 +1721,7 @@ impl<T> StreamReader<T> {
     /// belong to the specified `store`.
     pub fn try_into<V: 'static>(mut self, mut store: impl AsContextMut) -> Result<V, Self> {
         let store = store.as_context_mut();
-        let state = store.0.concurrent_state_mut();
+        let state = store.0.concurrent_state_mut_already_forced_current_thread();
         let id = state.get_mut(self.id).unwrap().state;
         if let WriteState::HostReady { try_into, .. } = &state.get_mut(id).unwrap().write {
             match try_into(TypeId::of::<V>()) {
@@ -1870,16 +1851,8 @@ pub(super) fn lift_index_to_stream(
 ) -> Result<TableId<TransmitHandle>> {
     match ty {
         InterfaceType::Stream(src) => {
-            let handle_table = cx
-                .instance_mut()
-                .table_for_transmit(TransmitIndex::Stream(src));
-            let (rep, is_done) = handle_table.stream_remove_readable(src, index)?;
-            if is_done {
-                bail!("cannot lift stream after being notified that the writable end dropped");
-            }
-            let id = TableId::<TransmitHandle>::new(rep);
-            cx.concurrent_state_mut().get_mut(id)?.common.handle = None;
-            Ok(id)
+            let (state, instance) = cx.concurrent_state_and_instance_mut();
+            lift_index_to_transmit(instance, state, TransmitIndex::Stream(src), index)
         }
         _ => func::bad_type_info(),
     }
@@ -1893,18 +1866,8 @@ pub(super) fn lower_stream_to_index<U>(
 ) -> Result<u32> {
     match ty {
         InterfaceType::Stream(dst) => {
-            let concurrent_state = cx.store.0.concurrent_state_mut();
-            let state = concurrent_state.get_mut(id)?.state;
-            let rep = concurrent_state.get_mut(state)?.read_handle.rep();
-
-            let handle = cx
-                .instance_mut()
-                .table_for_transmit(TransmitIndex::Stream(dst))
-                .stream_insert_read(dst, rep)?;
-
-            cx.store.0.concurrent_state_mut().get_mut(id)?.common.handle = Some(handle);
-
-            Ok(handle)
+            cx.instance_handle()
+                .lower_transmit_to_index(cx.store.0, TransmitIndex::Stream(dst), id)
         }
         _ => func::bad_type_info(),
     }
@@ -2350,7 +2313,7 @@ impl StoreOpaque {
         let future = async move {
             let stream_state = future.await?;
             tls::get(|store| {
-                let state = store.concurrent_state_mut();
+                let state = store.concurrent_state_mut()?;
                 let transmit = state.get_mut(id)?;
                 let ReadState::HostReady {
                     consume,
@@ -2380,7 +2343,8 @@ impl StoreOpaque {
             })
         };
 
-        self.concurrent_state_mut().push_future(future.boxed());
+        self.concurrent_state_mut_already_forced_current_thread()
+            .push_future(future.boxed());
     }
 
     fn pipe_to_guest(
@@ -2392,7 +2356,7 @@ impl StoreOpaque {
         let future = async move {
             let stream_state = future.await?;
             tls::get(|store| {
-                let state = store.concurrent_state_mut();
+                let state = store.concurrent_state_mut()?;
                 let transmit = state.get_mut(id)?;
                 let WriteState::HostReady {
                     produce,
@@ -2424,12 +2388,14 @@ impl StoreOpaque {
             })
         };
 
-        self.concurrent_state_mut().push_future(future.boxed());
+        self.concurrent_state_mut_already_forced_current_thread()
+            .push_future(future.boxed());
     }
 
     /// Drop the read end of a stream or future read from the host.
     fn host_drop_reader(&mut self, id: TableId<TransmitHandle>, kind: TransmitKind) -> Result<()> {
-        let state = self.concurrent_state_mut();
+        let state = self.concurrent_state_mut()?;
+        Waitable::Transmit(id).join(state, None)?;
         let transmit_id = state.get_mut(id)?.state;
         let transmit = state
             .get_mut(transmit_id)
@@ -2471,8 +2437,6 @@ impl StoreOpaque {
                 )?;
             }
 
-            WriteState::HostReady { .. } => {}
-
             WriteState::Open => {
                 state.update_event(
                     write_handle.rep(),
@@ -2489,7 +2453,11 @@ impl StoreOpaque {
                 )?;
             }
 
-            WriteState::Dropped => {
+            // If the writer has already been dropped, then this cleans out the
+            // state that the reader is using. If the write is host-owned then
+            // by cleaning this out we run the host's `Drop` implementation
+            // which notifies it of this drop.
+            WriteState::Dropped | WriteState::HostReady { .. } => {
                 log::trace!("host_drop_reader delete {transmit_id:?}");
                 state.delete_transmit(transmit_id)?;
             }
@@ -2503,7 +2471,8 @@ impl StoreOpaque {
         id: TableId<TransmitHandle>,
         on_drop_open: Option<fn() -> Result<()>>,
     ) -> Result<()> {
-        let state = self.concurrent_state_mut();
+        let state = self.concurrent_state_mut()?;
+        Waitable::Transmit(id).join(state, None)?;
         let transmit_id = state.get_mut(id)?.state;
         let transmit = state
             .get_mut(transmit_id)
@@ -2521,10 +2490,7 @@ impl StoreOpaque {
             }
             WriteState::HostReady { .. } => {}
             v @ WriteState::Open => {
-                if let (Some(on_drop_open), false) = (
-                    on_drop_open,
-                    transmit.done || matches!(transmit.read, ReadState::Dropped),
-                ) {
+                if let (Some(on_drop_open), false) = (on_drop_open, transmit.done) {
                     on_drop_open()?;
                 } else {
                     *v = WriteState::Dropped;
@@ -2533,7 +2499,7 @@ impl StoreOpaque {
             WriteState::Dropped => bail_bug!("write state is already dropped"),
         }
 
-        let transmit = self.concurrent_state_mut().get_mut(transmit_id)?;
+        let transmit = self.concurrent_state_mut()?.get_mut(transmit_id)?;
 
         // If the existing read state is dropped, then there's nothing to read
         // and we can keep it that way.
@@ -2555,7 +2521,7 @@ impl StoreOpaque {
             // represent that a read must be performed
             ReadState::GuestReady { ty, handle, .. } => {
                 // Ensure the final read of the guest is queued, with appropriate closure indicator
-                self.concurrent_state_mut().update_event(
+                self.concurrent_state_mut()?.update_event(
                     read_handle.rep(),
                     match ty {
                         TransmitIndex::Future(ty) => Event::FutureRead {
@@ -2570,11 +2536,9 @@ impl StoreOpaque {
                 )?;
             }
 
-            ReadState::HostReady { .. } | ReadState::HostToHost { .. } => {}
-
             // If the read state is open, then there are no registered readers of the stream/future
             ReadState::Open => {
-                self.concurrent_state_mut().update_event(
+                self.concurrent_state_mut()?.update_event(
                     read_handle.rep(),
                     match on_drop_open {
                         Some(_) => Event::FutureRead {
@@ -2589,11 +2553,15 @@ impl StoreOpaque {
                 )?;
             }
 
-            // If the read state was already dropped, then we can remove the transmit state completely
-            // (both writer and reader have been dropped)
-            ReadState::Dropped => {
+            // If the read state was already dropped, then we can remove the
+            // transmit state completely (both writer and reader have been
+            // dropped). If the read state is host-owned then it's additionally
+            // deleted here as a notification that the read end has gone away.
+            // Running the host's `Drop` implementation is what notifies it of
+            // this event.
+            ReadState::Dropped | ReadState::HostReady { .. } | ReadState::HostToHost { .. } => {
                 log::trace!("host_drop_writer delete {transmit_id:?}");
-                self.concurrent_state_mut().delete_transmit(transmit_id)?;
+                self.concurrent_state_mut()?.delete_transmit(transmit_id)?;
             }
         }
         Ok(())
@@ -2603,7 +2571,7 @@ impl StoreOpaque {
         &mut self,
         id: TableId<TransmitHandle>,
     ) -> Result<TransmitOrigin> {
-        let state = self.concurrent_state_mut();
+        let state = self.concurrent_state_mut()?;
         let state_id = state.get_mut(id)?.state;
         Ok(state.get_mut(state_id)?.origin)
     }
@@ -2619,7 +2587,7 @@ impl<T> StoreContextMut<'_, T> {
         P::Item: func::Lower,
     {
         let token = StoreToken::new(self.as_context_mut());
-        let state = self.0.concurrent_state_mut();
+        let state = self.0.concurrent_state_mut()?;
         let (_, read) = state.new_transmit(TransmitOrigin::Host)?;
         let producer = Arc::new(LockedState::new((Box::pin(producer), P::Buffer::default())));
         let id = state.get_mut(read)?.state;
@@ -2635,15 +2603,16 @@ impl<T> StoreContextMut<'_, T> {
                     let (result, cancelled) = if buffer.remaining().is_empty() {
                         future::poll_fn(|cx| {
                             tls::get(|store| {
-                                let transmit = store.concurrent_state_mut().get_mut(id)?;
+                                let transmit = store.concurrent_state_mut()?.get_mut(id)?;
 
                                 let &WriteState::HostReady { cancel, .. } = &transmit.write else {
                                     bail_bug!("expected WriteState::HostReady")
                                 };
 
+                                let mut host_written = 0;
                                 let mut host_buffer =
                                     if let ReadState::HostToHost { buffer, .. } = &mut transmit.read {
-                                        Some(Cursor::new(mem::take(buffer)))
+                                        Some(mem::take(buffer))
                                     } else {
                                         None
                                     };
@@ -2654,21 +2623,26 @@ impl<T> StoreContextMut<'_, T> {
                                     Destination {
                                         id,
                                         buffer,
-                                        host_buffer: host_buffer.as_mut(),
+                                        host_buffer: host_buffer.as_mut().map(|b| {
+                                            HostBuffer {
+                                                dst: b,
+                                                marked_written: &mut host_written,
+                                            }
+                                        }),
                                         _phantom: PhantomData,
                                     },
                                     cancel,
                                 );
 
-                                let transmit = store.concurrent_state_mut().get_mut(id)?;
+                                let transmit = store.concurrent_state_mut()?.get_mut(id)?;
 
                                 let host_offset = if let (
                                     Some(host_buffer),
                                     ReadState::HostToHost { buffer, limit, .. },
                                 ) = (host_buffer, &mut transmit.read)
                                 {
-                                    *limit = usize::try_from(host_buffer.position())?;
-                                    *buffer = host_buffer.into_inner();
+                                    *limit = host_written;
+                                    *buffer = host_buffer;
                                     *limit
                                 } else {
                                     0
@@ -2711,7 +2685,7 @@ impl<T> StoreContextMut<'_, T> {
                     };
 
                     let (guest_offset, host_offset, count) = tls::get(|store| {
-                        let transmit = store.concurrent_state_mut().get_mut(id)?;
+                        let transmit = store.concurrent_state_mut()?.get_mut(id)?;
                         let (count, host_offset) = match &transmit.read {
                             &ReadState::GuestReady { count, .. } => (count.as_u32(), 0),
                             &ReadState::HostToHost { limit, .. } => (1, limit),
@@ -2798,7 +2772,7 @@ impl<T> StoreContextMut<'_, T> {
         consumer: C,
     ) -> Result<()> {
         let token = StoreToken::new(self.as_context_mut());
-        let state = self.0.concurrent_state_mut();
+        let state = self.0.concurrent_state_mut()?;
         let id = state.get_mut(id)?.state;
         let transmit = state.get_mut(id)?;
         let consumer = Arc::new(LockedState::new(Box::pin(consumer)));
@@ -2812,7 +2786,7 @@ impl<T> StoreContextMut<'_, T> {
 
                 let (result, cancelled) = future::poll_fn(|cx| {
                     tls::get(|store| {
-                        let cancel = match &store.concurrent_state_mut().get_mut(id)?.read {
+                        let cancel = match &store.concurrent_state_mut()?.get_mut(id)?.read {
                             &ReadState::HostReady { cancel, .. } => cancel,
                             ReadState::Open => false,
                             _ => bail_bug!("unexpected read state"),
@@ -2832,7 +2806,7 @@ impl<T> StoreContextMut<'_, T> {
                             cancel_waker,
                             cancel,
                             ..
-                        } = &mut store.concurrent_state_mut().get_mut(id)?.read
+                        } = &mut store.concurrent_state_mut()?.get_mut(id)?.read
                         {
                             if poll.is_pending() {
                                 *cancel_waker = Some(cx.waker().clone());
@@ -2848,7 +2822,7 @@ impl<T> StoreContextMut<'_, T> {
                 .await?;
 
                 let (guest_offset, count) = tls::get(|store| {
-                    let transmit = store.concurrent_state_mut().get_mut(id)?;
+                    let transmit = store.concurrent_state_mut()?.get_mut(id)?;
                     Ok((
                         match &transmit.read {
                             &ReadState::HostReady { guest_offset, .. } => guest_offset,
@@ -2883,7 +2857,7 @@ impl<T> StoreContextMut<'_, T> {
 
                         if let TransmitKind::Future = kind {
                             tls::get(|store| {
-                                store.concurrent_state_mut().get_mut(id)?.done = true;
+                                store.concurrent_state_mut()?.get_mut(id)?.done = true;
                                 crate::error::Ok(())
                             })?;
                         }
@@ -2958,7 +2932,7 @@ impl<T> StoreContextMut<'_, T> {
                     loop {
                         if tls::get(|store| {
                             crate::error::Ok(matches!(
-                                store.concurrent_state_mut().get_mut(id)?.read,
+                                store.concurrent_state_mut()?.get_mut(id)?.read,
                                 ReadState::Dropped
                             ))
                         })? {
@@ -2976,7 +2950,7 @@ impl<T> StoreContextMut<'_, T> {
                     }
                 }
                 .map(move |result| {
-                    tls::get(|store| store.concurrent_state_mut().delete_transmit(id))?;
+                    tls::get(|store| store.concurrent_state_mut()?.delete_transmit(id))?;
                     result
                 });
 
@@ -2998,7 +2972,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
     kind: TransmitKind,
 ) -> Result<()> {
     let (read, guest_offset) = tls::get(|store| {
-        let transmit = store.concurrent_state_mut().get_mut(id)?;
+        let transmit = store.concurrent_state_mut()?.get_mut(id)?;
 
         let guest_offset = if let &WriteState::HostReady { guest_offset, .. } = &transmit.write {
             Some(guest_offset)
@@ -3031,7 +3005,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
 
             if let TransmitKind::Future = kind {
                 tls::get(|store| {
-                    store.concurrent_state_mut().get_mut(id)?.done = true;
+                    store.concurrent_state_mut()?.get_mut(id)?.done = true;
                     crate::error::Ok(())
                 })?;
             }
@@ -3064,28 +3038,32 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
                     let (tx, rx) = oneshot::channel();
                     tls::get(move |store| {
                         store
-                            .concurrent_state_mut()
-                            .push_high_priority(WorkItem::WorkerFunction(AlwaysMut::new(Box::new(
-                                move |store| {
+                            .concurrent_state_mut()?
+                            .push_high_priority(WorkItem::WorkerFunction(AlwaysMut::new(
+                                Box::new(move |store| {
                                     _ = tx.send(accept(token.as_context_mut(store))?);
                                     Ok(())
-                                },
-                            ))))
-                    });
-                    rx.await?
+                                }),
+                            )));
+                        crate::error::Ok(())
+                    })?;
+                    match rx.await {
+                        Ok(r) => r,
+                        Err(oneshot::Canceled) => bail_bug!("work cancelled"),
+                    }
                 } else {
                     // Optimize flat payloads (i.e. those which do not
                     // require calling the guest's realloc function) by
                     // lowering directly instead of using a oneshot::channel
                     // and background task.
                     tls::get(|store| accept(token.as_context_mut(store)))?
-                };
+                }
             }
 
             tls::get(|store| {
                 let count = old_remaining - pair.with(|p| p.1.remaining().len())?;
 
-                let transmit = store.concurrent_state_mut().get_mut(id)?;
+                let transmit = store.concurrent_state_mut()?.get_mut(id)?;
 
                 let WriteState::HostReady { guest_offset, .. } = &mut transmit.write else {
                     bail_bug!("expected WriteState::HostReady")
@@ -3135,7 +3113,7 @@ async fn write<D: 'static, P: Send + 'static, T: func::Lower + 'static, B: Write
             }
 
             tls::get(|store| {
-                store.concurrent_state_mut().get_mut(id)?.read = match state {
+                store.concurrent_state_mut()?.get_mut(id)?.read = match state {
                     StreamResult::Dropped => ReadState::Dropped,
                     StreamResult::Completed | StreamResult::Cancelled => ReadState::HostToHost {
                         accept,
@@ -3166,7 +3144,7 @@ impl Instance {
         cancel: bool,
     ) -> Result<ReturnCode> {
         let mut future = consume();
-        store.concurrent_state_mut().get_mut(transmit_id)?.read = ReadState::HostReady {
+        store.concurrent_state_mut()?.get_mut(transmit_id)?.read = ReadState::HostReady {
             consume,
             guest_offset,
             cancel,
@@ -3180,7 +3158,7 @@ impl Instance {
 
         Ok(match poll {
             Poll::Ready(state) => {
-                let transmit = store.concurrent_state_mut().get_mut(transmit_id)?;
+                let transmit = store.concurrent_state_mut()?.get_mut(transmit_id)?;
                 let ReadState::HostReady { guest_offset, .. } = &mut transmit.read else {
                     bail_bug!("expected ReadState::HostReady")
                 };
@@ -3208,7 +3186,7 @@ impl Instance {
         cancel: bool,
     ) -> Result<ReturnCode> {
         let mut future = produce();
-        store.concurrent_state_mut().get_mut(transmit_id)?.write = WriteState::HostReady {
+        store.concurrent_state_mut()?.get_mut(transmit_id)?.write = WriteState::HostReady {
             produce,
             try_into,
             guest_offset,
@@ -3223,7 +3201,7 @@ impl Instance {
 
         Ok(match poll {
             Poll::Ready(state) => {
-                let transmit = store.concurrent_state_mut().get_mut(transmit_id)?;
+                let transmit = store.concurrent_state_mut()?.get_mut(transmit_id)?;
                 let WriteState::HostReady { guest_offset, .. } = &mut transmit.write else {
                     bail_bug!("expected WriteState::HostReady")
                 };
@@ -3486,7 +3464,7 @@ impl Instance {
         if count > 0 && size > 0 {
             self.options_memory(store, options)
                 .get(address..)
-                .and_then(|b| b.get(..(size * count)))
+                .and_then(|b| b.get(..size.checked_mul(count)?))
                 .map(drop)
                 .ok_or_else(|| crate::format_err!("read pointer out of bounds of memory"))
         } else {
@@ -3528,7 +3506,7 @@ impl Instance {
 
         *state = TransmitLocalState::Busy;
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
-        let concurrent_state = store.0.concurrent_state_mut();
+        let concurrent_state = store.0.concurrent_state_mut()?;
         let transmit_id = concurrent_state.get_mut(transmit_handle)?.state;
         let transmit = concurrent_state.get_mut(transmit_id)?;
         log::trace!(
@@ -3637,7 +3615,7 @@ impl Instance {
                     Some(ty) => usize::try_from(types.canonical_abi(ty).size32)?,
                     None => 0,
                 };
-                let concurrent_state = store.0.concurrent_state_mut();
+                let concurrent_state = store.0.concurrent_state_mut()?;
                 if read_complete {
                     let total = if let Some(Event::StreamRead {
                         code: ReturnCode::Completed(old_total),
@@ -3782,8 +3760,8 @@ impl Instance {
 
         *state = TransmitLocalState::Busy;
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
-        let concurrent_state = store.0.concurrent_state_mut();
-        let caller_thread = concurrent_state.current_guest_thread()?;
+        let caller_thread = store.0.current_guest_thread()?;
+        let concurrent_state = store.0.concurrent_state_mut()?;
         let transmit_id = concurrent_state.get_mut(transmit_handle)?.state;
         let transmit = concurrent_state.get_mut(transmit_id)?;
         log::trace!(
@@ -3875,7 +3853,7 @@ impl Instance {
                     Some(ty) => usize::try_from(types.canonical_abi(ty).size32)?,
                     None => 0,
                 };
-                let concurrent_state = store.0.concurrent_state_mut();
+                let concurrent_state = store.0.concurrent_state_mut()?;
 
                 if write_complete {
                     let total = if let Some(Event::StreamWrite {
@@ -3950,7 +3928,7 @@ impl Instance {
                 )?;
 
                 if let (TransmitIndex::Future(_), ReturnCode::Completed(_)) = (ty, code) {
-                    store.0.concurrent_state_mut().get_mut(transmit_id)?.done = true;
+                    store.0.concurrent_state_mut()?.get_mut(transmit_id)?.done = true;
                 }
 
                 code
@@ -3992,7 +3970,7 @@ impl Instance {
     ) -> Result<ReturnCode> {
         let waitable = Waitable::Transmit(handle);
         store.wait_for_event(waitable)?;
-        let event = waitable.take_event(store.concurrent_state_mut())?;
+        let event = waitable.take_event(store.concurrent_state_mut()?)?;
         if let Some(event @ (Event::StreamWrite { code, .. } | Event::FutureWrite { code, .. })) =
             event
         {
@@ -4010,7 +3988,7 @@ impl Instance {
         transmit_id: TableId<TransmitState>,
         async_: bool,
     ) -> Result<ReturnCode> {
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         let transmit = state.get_mut(transmit_id)?;
         log::trace!(
             "host_cancel_write state {transmit_id:?}; write state {:?} read state {:?}",
@@ -4046,7 +4024,7 @@ impl Instance {
                 ReturnCode::Blocked
             } else {
                 let handle = store
-                    .concurrent_state_mut()
+                    .concurrent_state_mut()?
                     .get_mut(transmit_id)?
                     .write_handle;
                 self.wait_for_write(store, handle)?
@@ -4056,7 +4034,7 @@ impl Instance {
         };
 
         if !matches!(code, ReturnCode::Blocked) {
-            let transmit = store.concurrent_state_mut().get_mut(transmit_id)?;
+            let transmit = store.concurrent_state_mut()?.get_mut(transmit_id)?;
 
             match &transmit.write {
                 WriteState::GuestReady { .. } => {
@@ -4079,7 +4057,7 @@ impl Instance {
     ) -> Result<ReturnCode> {
         let waitable = Waitable::Transmit(handle);
         store.wait_for_event(waitable)?;
-        let event = waitable.take_event(store.concurrent_state_mut())?;
+        let event = waitable.take_event(store.concurrent_state_mut()?)?;
         if let Some(event @ (Event::StreamRead { code, .. } | Event::FutureRead { code, .. })) =
             event
         {
@@ -4097,7 +4075,7 @@ impl Instance {
         transmit_id: TableId<TransmitState>,
         async_: bool,
     ) -> Result<ReturnCode> {
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         let transmit = state.get_mut(transmit_id)?;
         log::trace!(
             "host_cancel_read state {transmit_id:?}; read state {:?} write state {:?}",
@@ -4133,7 +4111,7 @@ impl Instance {
                 ReturnCode::Blocked
             } else {
                 let handle = store
-                    .concurrent_state_mut()
+                    .concurrent_state_mut()?
                     .get_mut(transmit_id)?
                     .read_handle;
                 self.wait_for_read(store, handle)?
@@ -4143,7 +4121,7 @@ impl Instance {
         };
 
         if !matches!(code, ReturnCode::Blocked) {
-            let transmit = store.concurrent_state_mut().get_mut(transmit_id)?;
+            let transmit = store.concurrent_state_mut()?.get_mut(transmit_id)?;
 
             match &transmit.read {
                 ReadState::GuestReady { .. } => {
@@ -4189,7 +4167,7 @@ impl Instance {
             }
             TransmitLocalState::Busy => {}
         }
-        let transmit_id = store.concurrent_state_mut().get_mut(id)?.state;
+        let transmit_id = store.concurrent_state_mut()?.get_mut(id)?.state;
         let code = self.cancel_write(store, transmit_id, async_)?;
         if !matches!(code, ReturnCode::Blocked) {
             let state =
@@ -4230,7 +4208,7 @@ impl Instance {
             }
             TransmitLocalState::Busy => {}
         }
-        let transmit_id = store.concurrent_state_mut().get_mut(id)?.state;
+        let transmit_id = store.concurrent_state_mut()?.get_mut(id)?.state;
         let code = self.cancel_read(store, transmit_id, async_)?;
         if !matches!(code, ReturnCode::Blocked) {
             let state =
@@ -4282,7 +4260,7 @@ impl Instance {
 
         // Create a new ErrorContext that is tracked along with other concurrent state
         let err_ctx = ErrorContextState { debug_msg };
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         let table_id = state.push(err_ctx)?;
         let global_ref_count_idx =
             TypeComponentGlobalErrorContextTableIndex::from_u32(table_id.rep());
@@ -4323,7 +4301,7 @@ impl Instance {
             .table_for_error_context(ty)
             .error_context_rep(err_ctx_handle)?;
 
-        let state = store.0.concurrent_state_mut();
+        let state = store.0.concurrent_state_mut()?;
         // Get the state associated with the error context
         let ErrorContextState { debug_msg } =
             state.get_mut(TableId::<ErrorContextState>::new(handle_table_id_rep))?;
@@ -4422,7 +4400,7 @@ impl Instance {
     /// `TransmitIndex` belongs.
     fn guest_new(self, store: &mut StoreOpaque, ty: TransmitIndex) -> Result<ResourcePair> {
         let (write, read) = store
-            .concurrent_state_mut()
+            .concurrent_state_mut()?
             .new_transmit(TransmitOrigin::guest(self.id().instance(), ty))?;
 
         let table = self.id().get_mut(store).table_for_transmit(ty);
@@ -4437,7 +4415,7 @@ impl Instance {
             ),
         };
 
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         state.get_mut(read)?.common.handle = Some(read_handle);
         state.get_mut(write)?.common.handle = Some(write_handle);
 
@@ -4462,7 +4440,7 @@ impl Instance {
 
         let global_ref_count_idx = TypeComponentGlobalErrorContextTableIndex::from_u32(rep);
 
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         let Some(GlobalErrorContextRefCount(global_ref_count)) = state
             .global_error_context_ref_counts
             .get_mut(&global_ref_count_idx)
@@ -4497,26 +4475,28 @@ impl Instance {
         src: TransmitIndex,
         dst: TransmitIndex,
     ) -> Result<u32> {
-        let mut instance = self.id().get_mut(store);
-        let src_table = instance.as_mut().table_for_transmit(src);
-        let (rep, is_done) = match src {
-            TransmitIndex::Future(idx) => src_table.future_remove_readable(idx, src_idx)?,
-            TransmitIndex::Stream(idx) => src_table.stream_remove_readable(idx, src_idx)?,
-        };
-        if is_done {
-            bail!("cannot lift after being notified that the writable end dropped");
-        }
-        let dst_table = instance.table_for_transmit(dst);
-        let handle = match dst {
-            TransmitIndex::Future(idx) => dst_table.future_insert_read(idx, rep),
-            TransmitIndex::Stream(idx) => dst_table.stream_insert_read(idx, rep),
-        }?;
-        store
-            .concurrent_state_mut()
-            .get_mut(TableId::<TransmitHandle>::new(rep))?
-            .common
-            .handle = Some(handle);
-        Ok(handle)
+        let id = self.lift_index_to_transmit(store, src, src_idx)?;
+        self.lower_transmit_to_index(store, dst, id)
+    }
+
+    fn lift_index_to_transmit(
+        self,
+        store: &mut StoreOpaque,
+        ty: TransmitIndex,
+        src_idx: u32,
+    ) -> Result<TableId<TransmitHandle>> {
+        let (state, _, _, instance) = store.lift_context_parts(self);
+        lift_index_to_transmit(instance, state.concurrent_state_mut(), ty, src_idx)
+    }
+
+    fn lower_transmit_to_index(
+        self,
+        store: &mut StoreOpaque,
+        ty: TransmitIndex,
+        id: TableId<TransmitHandle>,
+    ) -> Result<u32> {
+        let (state, _, _, instance) = store.lift_context_parts(self);
+        lower_transmit_to_index(instance, state.concurrent_state_mut(), ty, id)
     }
 
     /// Implements the `future.new` intrinsic.
@@ -4592,7 +4572,7 @@ impl Instance {
         // as the new component has essentially created a new reference that will
         // be dropped/handled independently
         let global_ref_count = store
-            .concurrent_state_mut()
+            .concurrent_state_mut()?
             .global_error_context_ref_counts
             .get_mut(&TypeComponentGlobalErrorContextTableIndex::from_u32(rep))
             .context("global ref count present for existing (sub)component error context")?;
@@ -4604,6 +4584,63 @@ impl Instance {
 
         Ok(dst_idx)
     }
+}
+
+/// Performs the opertion of lifting a future or stream from and instance into
+/// the `TransmitHandle` for it.
+///
+/// The `src_idx` is the guest-specified index within `instance` and `ty` is the
+/// expected type of future/stream.
+fn lift_index_to_transmit(
+    instance: Pin<&mut ComponentInstance>,
+    concurrent_state: &mut ConcurrentState,
+    ty: TransmitIndex,
+    src_idx: u32,
+) -> Result<TableId<TransmitHandle>> {
+    let handle_table = instance.table_for_transmit(ty);
+    let (rep, is_done) = match ty {
+        TransmitIndex::Future(idx) => handle_table.future_remove_readable(idx, src_idx)?,
+        TransmitIndex::Stream(idx) => handle_table.stream_remove_readable(idx, src_idx)?,
+    };
+    let desc = match ty {
+        TransmitIndex::Future(_) => "future",
+        TransmitIndex::Stream(_) => "stream",
+    };
+    if is_done {
+        bail!("cannot lift {desc} after being notified that the writable end dropped");
+    }
+    let id = TableId::<TransmitHandle>::new(rep);
+    let future = concurrent_state.get_mut(id)?;
+    if future.common.set.is_some() {
+        bail!("cannot lift {desc} while it's in a waitable set");
+    }
+    future.common.handle = None;
+
+    let state = future.state;
+    if concurrent_state.get_mut(state)?.done {
+        bail!("cannot lift {desc} after previous read succeeded");
+    }
+
+    Ok(id)
+}
+
+/// Performs the opertion of lowering a future or stream `TransmitHandle` into
+/// an instance.
+fn lower_transmit_to_index(
+    instance: Pin<&mut ComponentInstance>,
+    concurrent_state: &mut ConcurrentState,
+    ty: TransmitIndex,
+    id: TableId<TransmitHandle>,
+) -> Result<u32> {
+    let state = concurrent_state.get_mut(id)?.state;
+    debug_assert_eq!(concurrent_state.get_mut(state)?.read_handle, id);
+    let handle_table = instance.table_for_transmit(ty);
+    let handle = match ty {
+        TransmitIndex::Future(idx) => handle_table.future_insert_read(idx, id.rep()),
+        TransmitIndex::Stream(idx) => handle_table.stream_insert_read(idx, id.rep()),
+    }?;
+    concurrent_state.get_mut(id)?.common.handle = Some(handle);
+    Ok(handle)
 }
 
 impl ComponentInstance {
@@ -4847,7 +4884,7 @@ impl Waitable {
         };
 
         let transmit_handle = TableId::<TransmitHandle>::new(rep);
-        let state = store.concurrent_state_mut();
+        let state = store.concurrent_state_mut()?;
         let transmit_id = state.get_mut(transmit_handle)?.state;
         let transmit = state.get_mut(transmit_id)?;
 
@@ -4887,14 +4924,14 @@ fn allow_intra_component_read_write(ty: Option<&InterfaceType>) -> bool {
 /// contains an
 /// `Option<T>`
 struct LockedState<T> {
-    inner: Mutex<Option<T>>,
+    inner: TryMutex<Option<T>>,
 }
 
 impl<T> LockedState<T> {
     /// Creates a new initial state with `value` stored.
     fn new(value: T) -> Self {
         Self {
-            inner: Mutex::new(Some(value)),
+            inner: TryMutex::new(Some(value)),
         }
     }
 
@@ -4906,10 +4943,10 @@ impl<T> LockedState<T> {
     /// As-used in this file there should never actually be contention on this
     /// lock nor recursive access so failing to acquire the lock is a fatal
     /// error that gets propagated upwards.
-    fn try_lock(&self) -> Result<MutexGuard<'_, Option<T>>> {
+    fn try_lock(&self) -> Result<TryMutexGuard<'_, Option<T>>> {
         match self.inner.try_lock() {
-            Ok(lock) => Ok(lock),
-            Err(_) => bail_bug!("should not have contention on state lock"),
+            Some(lock) => Ok(lock),
+            None => bail_bug!("should not have contention on state lock"),
         }
     }
 

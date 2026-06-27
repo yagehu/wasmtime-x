@@ -14,24 +14,25 @@
   (global (export "funcref-local") funcref (ref.func $local)))
 
 ;; function u0:0(i64 vmctx, i64) -> i32, i32, i64, i64 tail {
-;;     region0 = 1 "table"
+;;     region0 = 8 "VMContext+0x8"
+;;     region1 = 268435480 "VMStoreContext+0x18"
+;;     region2 = 1610612736 "PublicGlobal"
 ;;     gv0 = vmctx
-;;     gv1 = load.i64 notrap aligned readonly gv0+8
-;;     gv2 = load.i64 notrap aligned gv1+24
-;;     gv3 = vmctx
+;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
+;;     gv2 = load.i64 notrap aligned region1 gv1+24
 ;;     stack_limit = gv2
 ;;
 ;;                                 block0(v0: i64, v1: i64):
-;;                                     v17 = iconst.i64 80
-;; @008f                               v7 = iadd v0, v17  ; v17 = 80
-;; @008f                               v8 = load.i32 notrap aligned v7
-;;                                     v16 = iconst.i64 96
-;; @0091                               v10 = iadd v0, v16  ; v16 = 96
-;; @0091                               v11 = load.i32 notrap aligned v10
-;; @0093                               v13 = load.i64 notrap aligned region0 v0+112
-;; @0095                               v15 = load.i64 notrap aligned region0 v0+128
+;; @008f                               v2 = iconst.i64 80
+;; @008f                               v3 = iadd v0, v2  ; v2 = 80
+;; @008f                               v4 = load.i32 notrap aligned region2 v3
+;; @0091                               v5 = iconst.i64 96
+;; @0091                               v6 = iadd v0, v5  ; v5 = 96
+;; @0091                               v7 = load.i32 notrap aligned region2 v6
+;; @0093                               v8 = load.i64 notrap aligned region2 v0+112
+;; @0095                               v9 = load.i64 notrap aligned region2 v0+128
 ;; @0097                               jump block1
 ;;
 ;;                                 block1:
-;; @0097                               return v8, v11, v13, v15
+;; @0097                               return v4, v7, v8, v9
 ;; }

@@ -85,7 +85,7 @@
 ;;       mov     x0, x9
 ;;       mov     x1, #0
 ;;       ldur    w2, [x28]
-;;       bl      #0x3f0
+;;       bl      #0x408
 ;;   e0: add     x28, x28, #4
 ;;       mov     sp, x28
 ;;       ldur    x9, [x28, #0x14]
@@ -153,7 +153,7 @@
 ;;       mov     x0, x9
 ;;       mov     x1, #0
 ;;       ldur    w2, [x28, #0xc]
-;;       bl      #0x3f0
+;;       bl      #0x408
 ;;  1f0: add     x28, x28, #0xc
 ;;       mov     sp, x28
 ;;       add     x28, x28, #4
@@ -193,10 +193,10 @@
 ;;       ldr     x28, [sp], #0x10
 ;;       ldp     x29, x30, [sp], #0x10
 ;;       ret
-;;  28c: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  290: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  294: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  298: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  29c: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  2a0: .byte   0x1f, 0xc1, 0x00, 0x00
-;;  2a4: .byte   0x1f, 0xc1, 0x00, 0x00
+;;  28c: udf     #0xc11f
+;;  290: udf     #0xc11f
+;;  294: udf     #0xc11f
+;;  298: udf     #0xc11f
+;;  29c: udf     #0xc11f
+;;  2a0: udf     #0xc11f
+;;  2a4: udf     #0xc11f

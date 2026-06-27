@@ -298,6 +298,7 @@ impl Metadata<'_> {
             memory_guard_size,
             debug_native,
             debug_guest,
+            debug_symbols,
             parse_wasm_debuginfo,
             consume_fuel,
             ref operator_cost,
@@ -367,6 +368,7 @@ impl Metadata<'_> {
             "native debug information support",
         )?;
         Self::check_bool(debug_guest, other.debug_guest, "guest debug")?;
+        Self::check_bool(debug_symbols, other.debug_symbols, "debug symbols")?;
         Self::check_bool(
             parse_wasm_debuginfo,
             other.parse_wasm_debuginfo,
@@ -503,17 +505,17 @@ impl Metadata<'_> {
     }
 
     fn check_unsafe_omit_bounds_checks(
-        module: Option<wasmtime_environ::OmitBoundsChecks>,
-        host: Option<wasmtime_environ::OmitBoundsChecks>,
+        module: wasmtime_environ::OmitBoundsChecks,
+        host: wasmtime_environ::OmitBoundsChecks,
     ) -> Result<()> {
         if module == host {
             return Ok(());
         }
 
         let desc = |cfg| match cfg {
-            None => "without bounds checks omission",
-            Some(wasmtime_environ::OmitBoundsChecks::All) => "with all bounds checks omission",
-            Some(wasmtime_environ::OmitBoundsChecks::Dynamic) => {
+            wasmtime_environ::OmitBoundsChecks::None => "with all bounds checks omission",
+            wasmtime_environ::OmitBoundsChecks::All => "with all bounds checks omission",
+            wasmtime_environ::OmitBoundsChecks::Dynamic => {
                 "with dynamic bounds checks omission"
             }
         };
@@ -638,7 +640,7 @@ mod test {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(any(miri, not(has_native_signals)), ignore)]
     #[cfg(target_pointer_width = "64")] // different defaults on 32-bit platforms
     fn test_tunables_int_mismatch() -> Result<()> {
         let engine = Engine::default();

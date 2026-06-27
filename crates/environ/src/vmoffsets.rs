@@ -279,6 +279,46 @@ pub trait PtrSize {
         base + i * slot_size
     }
 
+    /// Return the offset of the `current_thread` field of `VMStoreContext`.
+    fn vmstore_context_current_thread(&self) -> u8 {
+        self.vmstore_context_component_context_slot(0) + (NUM_COMPONENT_CONTEXT_SLOTS as u8) * 4
+    }
+
+    // Offsets within `VMDeferredThread`
+
+    /// Offset of `VMDeferredThread::parent`.
+    fn vmdeferred_thread_parent(&self) -> u8 {
+        0
+    }
+
+    /// Offset of `VMDeferredThread::caller_instance`.
+    fn vmdeferred_thread_caller_instance(&self) -> u8 {
+        self.size()
+    }
+
+    /// Offset of `VMDeferredThread::callee_async`.
+    fn vmdeferred_thread_callee_async(&self) -> u8 {
+        self.vmdeferred_thread_caller_instance() + 4
+    }
+
+    /// Offset of `VMDeferredThread::callee_instance`.
+    fn vmdeferred_thread_callee_instance(&self) -> u8 {
+        self.vmdeferred_thread_callee_async() + 4
+    }
+
+    /// Offset of `VMDeferredThread::saved_context[i]`.
+    fn vmdeferred_thread_saved_context(&self, i: u8) -> u8 {
+        assert!(usize::from(i) < NUM_COMPONENT_CONTEXT_SLOTS);
+        self.vmdeferred_thread_callee_instance() + 4 + i * 4
+    }
+
+    /// Return the size of `VMDeferredThread`, rounded up to pointer alignment.
+    fn size_of_vmdeferred_thread(&self) -> u8 {
+        let unaligned =
+            self.vmdeferred_thread_callee_instance() + 4 + (NUM_COMPONENT_CONTEXT_SLOTS as u8) * 4;
+        align(u32::from(unaligned), u32::from(self.size())) as u8
+    }
+
     // Offsets within `VMMemoryDefinition`
 
     /// The offset of the `base` field.
@@ -565,6 +605,27 @@ pub trait PtrSize {
     }
 }
 
+/// A trait to abstract over various types that contain a `P: PtrSize`.
+pub trait GetPtrSize {
+    /// The type that implements `PtrSize`.
+    type Ptr: PtrSize;
+
+    /// Get a `&P` where `P: PtrSize`.
+    fn get_ptr_size(&self) -> &Self::Ptr;
+}
+
+impl<P> GetPtrSize for P
+where
+    P: PtrSize,
+{
+    type Ptr = Self;
+
+    #[inline]
+    fn get_ptr_size(&self) -> &Self::Ptr {
+        self
+    }
+}
+
 /// Type representing the size of a pointer for the current compilation host
 #[derive(Clone, Copy)]
 pub struct HostPtr;
@@ -719,6 +780,15 @@ impl<P: PtrSize> VMOffsets<P> {
             defined_memories: "defined memories",
             imported_memories: "imported memories",
         }
+    }
+}
+
+impl<P: PtrSize> GetPtrSize for VMOffsets<P> {
+    type Ptr = P;
+
+    #[inline]
+    fn get_ptr_size(&self) -> &Self::Ptr {
+        &self.ptr
     }
 }
 

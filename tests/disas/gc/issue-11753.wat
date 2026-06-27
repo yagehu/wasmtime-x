@@ -51,11 +51,14 @@
 ;;       movq    0x20(%rsi), %rdi
 ;;       leaq    (%rdi, %rcx), %rsi
 ;;       movl    $0xb0000002, (%rdi, %rcx)
+;;       ╰─╼ trap: GcHeapCorrupt
 ;;       movq    0x28(%r9), %r8
 ;;       movl    (%r8), %r8d
 ;;       movl    %r8d, 4(%rdi, %rcx)
+;;       ╰─╼ trap: GcHeapCorrupt
 ;;       movl    $0x20, %r8d
 ;;       movl    %r8d, 8(%rdi, %rcx)
+;;       ╰─╼ trap: GcHeapCorrupt
 ;;       movl    %eax, (%rsp)
 ;;       movl    $0x2a, 0x10(%rsi)
 ;;       ╰─╼ trap: GcHeapCorrupt
@@ -91,7 +94,7 @@
 ;;   f4: movl    (%rax), %edx
 ;;   f6: movl    $0x20, %ecx
 ;;   fb: movl    $0x10, %r8d
-;;  101: callq   0x271
+;;  101: callq   0x286
 ;;  106: movq    8(%rsp), %r9
 ;;  10b: movq    8(%r9), %rcx
 ;;  10f: movl    %eax, %esi

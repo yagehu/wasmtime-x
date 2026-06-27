@@ -688,7 +688,7 @@ fn enter_sync_call(
 
 fn exit_sync_call(store: &mut dyn VMStore, instance: Instance) -> Result<()> {
     store
-        .component_resource_tables(Some(instance))
+        .component_resource_tables(Some(instance))?
         .validate_scope_exit()?;
     store.exit_guest_sync_call()
 }
@@ -901,7 +901,7 @@ unsafe fn sync_start(
             callback.cast::<crate::vm::VMFuncRef>(),
             NonNull::new(callee).unwrap().cast::<crate::vm::VMFuncRef>(),
             param_count,
-            storage.cast::<std::mem::MaybeUninit<crate::ValRaw>>(),
+            storage.cast::<core::mem::MaybeUninit<crate::ValRaw>>(),
             storage_len,
         )
     }
