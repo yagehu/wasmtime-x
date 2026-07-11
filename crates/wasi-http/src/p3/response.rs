@@ -1,7 +1,6 @@
 use crate::p3::bindings::http::types::ErrorCode;
 use crate::p3::body::{Body, GuestBody};
-use crate::p3::{WasiHttpCtxView, WasiHttpView};
-use crate::{FieldMap, get_content_length};
+use crate::{Error, FieldMap, WasiHttpCtxView, WasiHttpHooks, WasiHttpView, get_content_length};
 use bytes::Bytes;
 use http::StatusCode;
 use http_body_util::BodyExt as _;
@@ -45,8 +44,8 @@ impl Response {
     pub fn into_http<T: WasiHttpView + 'static>(
         self,
         store: impl AsContextMut<Data = T>,
-        fut: impl Future<Output = Result<(), ErrorCode>> + Send + 'static,
-    ) -> wasmtime::Result<http::Response<UnsyncBoxBody<Bytes, ErrorCode>>> {
+        fut: impl Future<Output = Result<(), Error>> + Send + 'static,
+    ) -> wasmtime::Result<http::Response<UnsyncBoxBody<Bytes, Error>>> {
         self.into_http_with_getter(store, fut, T::http)
     }
 
@@ -55,9 +54,9 @@ impl Response {
     pub fn into_http_with_getter<T: 'static>(
         self,
         store: impl AsContextMut<Data = T>,
-        fut: impl Future<Output = Result<(), ErrorCode>> + Send + 'static,
+        fut: impl Future<Output = Result<(), Error>> + Send + 'static,
         getter: fn(&mut T) -> WasiHttpCtxView<'_>,
-    ) -> wasmtime::Result<http::Response<UnsyncBoxBody<Bytes, ErrorCode>>> {
+    ) -> wasmtime::Result<http::Response<UnsyncBoxBody<Bytes, Error>>> {
         let res = http::Response::try_from(self)?;
         let (res, body) = res.into_parts();
         let body = match body {
@@ -91,21 +90,22 @@ impl Response {
 
     /// Convert [http::Response] into [Response].
     pub fn from_http<T>(
+        hooks: &mut dyn WasiHttpHooks,
         res: http::Response<T>,
     ) -> (
         Self,
-        impl Future<Output = Result<(), ErrorCode>> + Send + 'static,
+        impl Future<Output = Result<(), Error>> + Send + 'static,
     )
     where
         T: http_body::Body<Data = Bytes> + Send + 'static,
-        T::Error: Into<ErrorCode>,
+        T::Error: Into<Error>,
     {
         let (parts, body) = res.into_parts();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
         let wasi_response = Response {
             status: parts.status,
-            headers: FieldMap::new_immutable(parts.headers),
+            headers: FieldMap::new_immutable(hooks, parts.headers),
             body: Body::Host {
                 body: body.map_err(Into::into).boxed_unsync(),
                 result_tx,
@@ -126,6 +126,7 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::default_hooks;
     use core::future::Future;
     use core::pin::pin;
     use core::task::{Context, Poll, Waker};
@@ -139,7 +140,7 @@ mod tests {
             .body(Full::new(Bytes::from_static(b"hello wasm")))
             .unwrap();
 
-        let (wasi_resp, io_future) = Response::from_http(http_response);
+        let (wasi_resp, io_future) = Response::from_http(default_hooks(), http_response);
         assert_eq!(wasi_resp.status, StatusCode::OK);
         assert_eq!(
             wasi_resp.headers.get("x-custom-header").unwrap(),

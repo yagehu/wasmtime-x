@@ -163,6 +163,12 @@ pub trait PtrSize {
         4 * self.size()
     }
 
+    /// Return the size of `VMSharedTypeIndex`.
+    #[inline]
+    fn size_of_vmshared_type_index(&self) -> u8 {
+        4
+    }
+
     /// Return the size of `VMGlobalDefinition`; this is the size of the largest value type (i.e. a
     /// V128).
     #[inline]
@@ -1037,7 +1043,7 @@ impl<P: PtrSize> VMOffsets<P> {
     /// Return the size of `VMSharedTypeIndex`.
     #[inline]
     pub fn size_of_vmshared_type_index(&self) -> u8 {
-        4
+        self.ptr.size_of_vmshared_type_index()
     }
 }
 
@@ -1411,3 +1417,6 @@ mod tests {
         assert!(is_aligned(align(31, 16)));
     }
 }
+
+/// The bit pattern of `VMLazyThread::forced()`.
+pub const VM_LAZY_THREAD_FORCED: u64 = 1;

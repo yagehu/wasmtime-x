@@ -10,9 +10,10 @@
 )
 ;; function u0:0(i64 vmctx, i64, i64) -> i32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
+;;     region1 = 67108888 "VMStoreContext+0x18"
 ;;     region2 = 40 "VMContext+0x28"
-;;     region3 = 2147483648 "GcHeap"
+;;     region3 = 1677721600 "TypeIdsArray+0x0"
+;;     region4 = 1610612752 "VMFuncRef+0x10"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -28,9 +29,9 @@
 ;; @0020                               jump block3
 ;;
 ;;                                 block3:
-;; @0020                               v9 = load.i32 user2 readonly region3 v2+16
+;; @0020                               v9 = load.i32 notrap aligned readonly region4 v2+16
 ;; @0020                               v7 = load.i64 notrap aligned readonly can_move region2 v0+40
-;; @0020                               v8 = load.i32 notrap aligned readonly can_move v7
+;; @0020                               v8 = load.i32 notrap aligned readonly can_move region3 v7
 ;; @0020                               v10 = icmp eq v9, v8
 ;; @0020                               v11 = uextend.i32 v10
 ;; @0020                               jump block4(v11)

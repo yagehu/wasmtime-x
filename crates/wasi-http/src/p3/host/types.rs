@@ -5,19 +5,12 @@ use crate::p3::bindings::http::types::{
     HostRequestOptions, HostRequestWithStore, HostResponse, HostResponseWithStore, Method, Request,
     RequestOptions, RequestOptionsError, Response, Scheme, StatusCode, Trailers,
 };
-use crate::p3::body::{Body, HostBodyStreamProducer};
-use crate::p3::{HeaderResult, HttpError, RequestOptionsResult, WasiHttp, WasiHttpCtxView};
-use core::mem;
-use core::pin::Pin;
-use core::task::{Context, Poll, ready};
-use http::header::CONTENT_LENGTH;
+use crate::p3::body::Body;
+use crate::p3::{HeaderResult, HttpError, RequestOptionsResult};
+use crate::{WasiHttp, WasiHttpCtxView};
 use std::sync::Arc;
-use tokio::sync::oneshot;
-use wasmtime::component::{
-    Access, FutureProducer, FutureReader, Resource, ResourceTable, StreamReader,
-};
+use wasmtime::component::{Access, FutureReader, Resource, ResourceTable, StreamReader};
 use wasmtime::error::Context as _;
-use wasmtime::{AsContextMut, StoreContextMut};
 
 fn get_fields<'a>(
     table: &'a ResourceTable,
@@ -142,73 +135,6 @@ fn parse_authority(authority: String) -> Result<http::uri::Authority, ()> {
     Ok(authority)
 }
 
-fn parse_header_value(
-    name: &http::HeaderName,
-    value: impl AsRef<[u8]>,
-) -> Result<http::HeaderValue, HeaderError> {
-    if name == CONTENT_LENGTH {
-        let s = str::from_utf8(value.as_ref()).or(Err(HeaderError::InvalidSyntax))?;
-        // RFC 9110 defines `Content-Length` as `1*DIGIT`. `u64`'s `FromStr` is
-        // more lenient and also accepts a leading `+`, so reject anything that
-        // isn't a non-empty run of decimal digits.
-        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(HeaderError::InvalidSyntax);
-        }
-        let v: u64 = s.parse().or(Err(HeaderError::InvalidSyntax))?;
-        Ok(v.into())
-    } else {
-        http::HeaderValue::from_bytes(value.as_ref()).or(Err(HeaderError::InvalidSyntax))
-    }
-}
-
-enum GuestBodyResultProducer {
-    Receiver(oneshot::Receiver<Box<dyn Future<Output = Result<(), ErrorCode>> + Send>>),
-    Future(Pin<Box<dyn Future<Output = Result<(), ErrorCode>> + Send>>),
-}
-
-fn poll_future<T>(
-    cx: &mut Context<'_>,
-    fut: Pin<&mut (impl Future<Output = T> + ?Sized)>,
-    finish: bool,
-) -> Poll<Option<T>> {
-    match fut.poll(cx) {
-        Poll::Ready(v) => Poll::Ready(Some(v)),
-        Poll::Pending if finish => Poll::Ready(None),
-        Poll::Pending => Poll::Pending,
-    }
-}
-
-impl<D> FutureProducer<D> for GuestBodyResultProducer {
-    type Item = Result<(), ErrorCode>;
-
-    fn poll_produce(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        _: StoreContextMut<D>,
-        finish: bool,
-    ) -> Poll<wasmtime::Result<Option<Self::Item>>> {
-        match &mut *self {
-            Self::Receiver(rx) => {
-                match ready!(poll_future(cx, Pin::new(rx), finish)) {
-                    Some(Ok(fut)) => {
-                        let mut fut = Box::into_pin(fut);
-                        // poll the received future once and update state
-                        let res = poll_future(cx, fut.as_mut(), finish);
-                        *self = Self::Future(fut);
-                        res.map(Ok)
-                    }
-                    Some(Err(..)) => {
-                        // oneshot sender dropped, treat as success
-                        Poll::Ready(Ok(Some(Ok(()))))
-                    }
-                    None => Poll::Ready(Ok(None)),
-                }
-            }
-            Self::Future(fut) => poll_future(cx, fut.as_mut(), finish).map(Ok),
-        }
-    }
-}
-
 impl HostFields for WasiHttpCtxView<'_> {
     fn new(&mut self) -> wasmtime::Result<Resource<Fields>> {
         push_fields(self.table, FieldMap::new_mutable(self.ctx.field_size_limit))
@@ -220,12 +146,7 @@ impl HostFields for WasiHttpCtxView<'_> {
     ) -> HeaderResult<Resource<Fields>> {
         let mut fields = FieldMap::new_mutable(self.ctx.field_size_limit);
         for (name, value) in entries {
-            let name = name.parse().or(Err(HeaderError::InvalidSyntax))?;
-            if self.hooks.is_forbidden_header(&name) {
-                return Err(HeaderError::Forbidden.into());
-            }
-            let value = parse_header_value(&name, value)?;
-            fields.append(name, value)?;
+            fields.append(self.hooks, name, value)?;
         }
         let fields = push_fields(self.table, fields).map_err(crate::p3::HeaderError::trap)?;
         Ok(fields)
@@ -253,27 +174,14 @@ impl HostFields for WasiHttpCtxView<'_> {
         &mut self,
         fields: Resource<Fields>,
         name: FieldName,
-        value: Vec<FieldValue>,
+        values: Vec<FieldValue>,
     ) -> HeaderResult<()> {
-        let name = name.parse().map_err(|_| HeaderError::InvalidSyntax)?;
-        if self.hooks.is_forbidden_header(&name) {
-            return Err(HeaderError::Forbidden.into());
-        }
-        let mut values = Vec::with_capacity(value.len());
-        for value in value {
-            let value = parse_header_value(&name, value)?;
-            values.push(value);
-        }
-        get_fields_mut(self.table, &fields)?.set(name, values)?;
+        get_fields_mut(self.table, &fields)?.set(self.hooks, name, values)?;
         Ok(())
     }
 
     fn delete(&mut self, fields: Resource<Fields>, name: FieldName) -> HeaderResult<()> {
-        let name = name.parse().map_err(|_| HeaderError::InvalidSyntax)?;
-        if self.hooks.is_forbidden_header(&name) {
-            return Err(HeaderError::Forbidden.into());
-        }
-        get_fields_mut(self.table, &fields)?.remove_all(name)?;
+        get_fields_mut(self.table, &fields)?.remove_all(self.hooks, name)?;
         Ok(())
     }
 
@@ -283,11 +191,8 @@ impl HostFields for WasiHttpCtxView<'_> {
         name: FieldName,
     ) -> HeaderResult<Vec<FieldValue>> {
         let name = name.parse().or(Err(HeaderError::InvalidSyntax))?;
-        if self.hooks.is_forbidden_header(&name) {
-            return Err(HeaderError::Forbidden.into());
-        }
         let values = get_fields_mut(self.table, &fields)?
-            .remove_all(name)?
+            .remove_all(self.hooks, name)?
             .into_iter();
         Ok(values.map(|value| value.as_bytes().into()).collect())
     }
@@ -298,12 +203,7 @@ impl HostFields for WasiHttpCtxView<'_> {
         name: FieldName,
         value: FieldValue,
     ) -> HeaderResult<()> {
-        let name = name.parse().or(Err(HeaderError::InvalidSyntax))?;
-        if self.hooks.is_forbidden_header(&name) {
-            return Err(HeaderError::Forbidden.into());
-        }
-        let value = parse_header_value(&name, value)?;
-        get_fields_mut(self.table, &fields)?.append(name, value)?;
+        get_fields_mut(self.table, &fields)?.append(self.hooks, name, value)?;
         Ok(())
     }
 
@@ -339,25 +239,7 @@ impl<T> HostRequestWithStore<T> for WasiHttp {
         trailers: FutureReader<Result<Option<Resource<Trailers>>, ErrorCode>>,
         options: Option<Resource<RequestOptions>>,
     ) -> wasmtime::Result<(Resource<Request>, FutureReader<Result<(), ErrorCode>>)> {
-        let (result_tx, result_rx) = oneshot::channel();
-        let body = match contents
-            .map(|rx| rx.try_into::<HostBodyStreamProducer<T>>(store.as_context_mut()))
-        {
-            Some(Ok(mut producer)) => Body::Host {
-                body: mem::take(&mut producer.body),
-                result_tx,
-            },
-            Some(Err(rx)) => Body::Guest {
-                contents_rx: Some(rx),
-                trailers_rx: trailers,
-                result_tx,
-            },
-            None => Body::Guest {
-                contents_rx: None,
-                trailers_rx: trailers,
-                result_tx,
-            },
-        };
+        let (body, body_result) = Body::new_guest(&mut store, contents, trailers)?;
         let WasiHttpCtxView { table, .. } = store.get();
         let headers = delete_fields(table, headers)?;
         let options = options
@@ -373,10 +255,7 @@ impl<T> HostRequestWithStore<T> for WasiHttp {
             body,
         };
         let req = table.push(req).context("failed to push request to table")?;
-        Ok((
-            req,
-            FutureReader::new(&mut store, GuestBodyResultProducer::Receiver(result_rx))?,
-        ))
+        Ok((req, body_result))
     }
 
     fn consume_body(
@@ -617,25 +496,7 @@ impl<T> HostResponseWithStore<T> for WasiHttp {
         contents: Option<StreamReader<u8>>,
         trailers: FutureReader<Result<Option<Resource<Trailers>>, ErrorCode>>,
     ) -> wasmtime::Result<(Resource<Response>, FutureReader<Result<(), ErrorCode>>)> {
-        let (result_tx, result_rx) = oneshot::channel();
-        let body = match contents
-            .map(|rx| rx.try_into::<HostBodyStreamProducer<T>>(store.as_context_mut()))
-        {
-            Some(Ok(mut producer)) => Body::Host {
-                body: mem::take(&mut producer.body),
-                result_tx,
-            },
-            Some(Err(rx)) => Body::Guest {
-                contents_rx: Some(rx),
-                trailers_rx: trailers,
-                result_tx,
-            },
-            None => Body::Guest {
-                contents_rx: None,
-                trailers_rx: trailers,
-                result_tx,
-            },
-        };
+        let (body, body_result) = Body::new_guest(&mut store, contents, trailers)?;
         let WasiHttpCtxView { table, .. } = store.get();
         let headers = delete_fields(table, headers)?;
         let res = Response {
@@ -646,10 +507,7 @@ impl<T> HostResponseWithStore<T> for WasiHttp {
         let res = table
             .push(res)
             .context("failed to push response to table")?;
-        Ok((
-            res,
-            FutureReader::new(&mut store, GuestBodyResultProducer::Receiver(result_rx))?,
-        ))
+        Ok((res, body_result))
     }
 
     fn consume_body(
@@ -729,24 +587,6 @@ impl Host for WasiHttpCtxView<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_header_value;
-    use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-
-    #[test]
-    fn content_length_rejects_non_digits() {
-        assert!(parse_header_value(&CONTENT_LENGTH, "0").is_ok());
-        assert!(parse_header_value(&CONTENT_LENGTH, "1234").is_ok());
-
-        // `u64::from_str` accepts these but they are not `1*DIGIT` per RFC 9110.
-        assert!(parse_header_value(&CONTENT_LENGTH, "+5").is_err());
-        assert!(parse_header_value(&CONTENT_LENGTH, "-5").is_err());
-        assert!(parse_header_value(&CONTENT_LENGTH, " 5").is_err());
-        assert!(parse_header_value(&CONTENT_LENGTH, "").is_err());
-
-        // other header names are unaffected
-        assert!(parse_header_value(&CONTENT_TYPE, "text/plain").is_ok());
-    }
-
     #[test]
     fn authority_accepts_ipv6_and_validates_ports() {
         use super::parse_authority;

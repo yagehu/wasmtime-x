@@ -4,6 +4,7 @@
 //! function to Cranelift IR guided by a `FuncEnvironment` which provides information about the
 //! WebAssembly module and the runtime environment.
 
+use crate::alias_region::AliasRegions;
 use crate::func_environ::FuncEnvironment;
 use crate::translate::TargetEnvironment;
 use crate::translate::code_translator::{bitcast_wasm_returns, translate_operator};
@@ -68,6 +69,7 @@ impl FuncTranslator {
         debug_assert_eq!(func.dfg.num_insts(), 0, "Function must be empty");
 
         let mut builder = FunctionBuilder::new(func, &mut self.func_ctx);
+        builder.make_stack_map_alias_region(Box::new(AliasRegions::<u8>::stack_map_region));
         builder.set_srcloc(cur_srcloc(&reader));
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
@@ -116,6 +118,7 @@ impl FuncTranslator {
         parse_function_body(validator, reader, &mut builder, environ)?;
 
         builder.finalize(environ.target_config());
+        crate::alias_region::debug_assert_all_mem_insts_have_alias_regions(func);
         log::trace!("translated Wasm to CLIF:\n{}", func.display());
         Ok(())
     }
@@ -127,6 +130,7 @@ impl FuncTranslator {
         environ: &mut FuncEnvironment<'_>,
     ) -> WasmResult<()> {
         let mut builder = FunctionBuilder::new(func, &mut self.func_ctx);
+        builder.make_stack_map_alias_region(Box::new(AliasRegions::<u8>::stack_map_region));
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
@@ -137,6 +141,7 @@ impl FuncTranslator {
         environ.after_translate_function(&mut builder)?;
         builder.ins().return_(&[]);
         builder.finalize(environ.target_config());
+        crate::alias_region::debug_assert_all_mem_insts_have_alias_regions(func);
         Ok(())
     }
 }

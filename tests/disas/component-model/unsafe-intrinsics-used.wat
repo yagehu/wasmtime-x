@@ -36,7 +36,7 @@
 
 ;; function u0:0(i64 vmctx, i64) -> i64 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435560 "VMStoreContext+0x68"
+;;     region1 = 67108968 "VMStoreContext+0x68"
 ;;
 ;; block0(v0: i64, v1: i64):
 ;;     v2 = load.i64 notrap aligned readonly can_move region0 v1+8
@@ -45,8 +45,10 @@
 ;; }
 ;;
 ;; function u0:0(i64 vmctx, i64, i64) -> i32 tail {
+;;     region0 = 1946157056 "UnsafeIntrinsicMemory"
+;;
 ;; block0(v0: i64, v1: i64, v2: i64):
-;;     v3 = load.i8 notrap aligned v2
+;;     v3 = load.i8 notrap aligned region0 v2
 ;;     v4 = uextend.i32 v3
 ;;     return v4
 ;; }

@@ -9,11 +9,15 @@
 
 ;; function u0:0(i64 vmctx, i64, i32, i32) -> i32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 2684354560 "VMTableDefinition+0x0"
-;;     region3 = 2684354568 "VMTableDefinition+0x8"
-;;     region4 = 1073741824 "PublicTable"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 671088640 "VMTableDefinition+0x0"
+;;     region3 = 671088648 "VMTableDefinition+0x8"
+;;     region4 = 268435456 "PublicTable"
 ;;     region5 = 40 "VMContext+0x28"
+;;     region6 = 1677721604 "TypeIdsArray+0x4"
+;;     region7 = 1610612752 "VMFuncRef+0x10"
+;;     region8 = 1610612744 "VMFuncRef+0x8"
+;;     region9 = 1610612760 "VMFuncRef+0x18"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -46,13 +50,13 @@
 ;;
 ;;                                 block3(v17: i64):
 ;; @0035                               v21 = load.i64 notrap aligned readonly can_move region5 v0+40
-;; @0035                               v22 = load.i32 notrap aligned readonly can_move v21+4
-;; @0035                               v23 = load.i32 user7 aligned readonly v17+16
+;; @0035                               v22 = load.i32 notrap aligned readonly can_move region6 v21+4
+;; @0035                               v23 = load.i32 user7 aligned readonly region7 v17+16
 ;; @0035                               v24 = icmp eq v23, v22
 ;; @0035                               v25 = uextend.i32 v24
 ;; @0035                               trapz v25, user8
-;; @0035                               v26 = load.i64 notrap aligned readonly v17+8
-;; @0035                               v27 = load.i64 notrap aligned readonly v17+24
+;; @0035                               v26 = load.i64 notrap aligned readonly region8 v17+8
+;; @0035                               v27 = load.i64 notrap aligned readonly region9 v17+24
 ;; @0035                               v28 = call_indirect sig0, v26(v27, v0, v2)
 ;; @0038                               jump block1
 ;;

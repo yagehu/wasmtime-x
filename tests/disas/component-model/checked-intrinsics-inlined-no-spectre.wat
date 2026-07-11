@@ -49,11 +49,10 @@
 )
 ;; function u0:0(i64 vmctx, i64, i64, i64) tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 72 "VMContext+0x48"
-;;     region3 = 268435560 "VMStoreContext+0x68"
-;;     region4 = 104 "VMContext+0x68"
-;;     region5 = 136 "VMContext+0x88"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 1207959576 "VMFunctionImport+0x18"
+;;     region3 = 67108968 "VMStoreContext+0x68"
+;;     region4 = 1946157056 "UnsafeIntrinsicMemory"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -74,14 +73,14 @@
 ;; @01aa                               v6 = load.i64 notrap aligned readonly can_move region0 v0+8
 ;; @01aa                               v7 = load.i64 notrap aligned readonly can_move region3 v6+104
 ;; @01b0                               v14 = iadd v7, v2
-;; @01b0                               v15 = load.i32 notrap aligned v14
+;; @01b0                               v15 = load.i32 notrap aligned region4 v14
 ;; @01bf                               v23, v24 = uadd_overflow v2, v9  ; v9 = 4
 ;; @01bf                               v25 = icmp ugt v23, v3
 ;; @01bf                               v26 = bor v24, v25
 ;; @01bf                               trapnz v26, heap_oob
 ;; @01bc                               v19 = iconst.i32 1
 ;; @01be                               v20 = iadd v15, v19  ; v19 = 1
-;; @01bf                               store notrap aligned v20, v14
+;; @01bf                               store notrap aligned region4 v20, v14
 ;; @01c1                               jump block1
 ;;
 ;;                                 block1:

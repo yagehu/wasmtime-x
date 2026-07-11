@@ -1,18 +1,20 @@
 //! Implementation of the `wasi:http/outgoing-handler` interface.
 
+use crate::WasiHttpCtxView;
 use crate::p2::{
-    HttpResult, WasiHttpCtxView,
+    HttpResult,
     bindings::http::{
         outgoing_handler,
         types::{self, Scheme},
     },
     error::internal_error,
     http_request_error,
-    types::{HostFutureIncomingResponse, HostOutgoingRequest, OutgoingRequestConfig},
+    types::{HostFutureIncomingResponse, HostOutgoingRequest},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty};
 use hyper::Method;
+use std::pin::Pin;
 use wasmtime::component::Resource;
 
 impl outgoing_handler::Host for WasiHttpCtxView<'_> {
@@ -21,19 +23,7 @@ impl outgoing_handler::Host for WasiHttpCtxView<'_> {
         request_id: Resource<HostOutgoingRequest>,
         options: Option<Resource<types::RequestOptions>>,
     ) -> HttpResult<Resource<HostFutureIncomingResponse>> {
-        let opts = options.and_then(|opts| self.table.get(&opts).ok());
-
-        let connect_timeout = opts
-            .and_then(|opts| opts.connect_timeout)
-            .unwrap_or(std::time::Duration::from_secs(600));
-
-        let first_byte_timeout = opts
-            .and_then(|opts| opts.first_byte_timeout)
-            .unwrap_or(std::time::Duration::from_secs(600));
-
-        let between_bytes_timeout = opts
-            .and_then(|opts| opts.between_bytes_timeout)
-            .unwrap_or(std::time::Duration::from_secs(600));
+        let opts = options.and_then(|opts| self.table.get(&opts).ok()).cloned();
 
         let req = self.table.delete(request_id)?;
         let mut builder = hyper::Request::builder();
@@ -54,9 +44,9 @@ impl outgoing_handler::Host for WasiHttpCtxView<'_> {
             },
         });
 
-        let (use_tls, scheme) = match req.scheme.unwrap_or(Scheme::Https) {
-            Scheme::Http => (false, http::uri::Scheme::HTTP),
-            Scheme::Https => (true, http::uri::Scheme::HTTPS),
+        let scheme = match req.scheme.unwrap_or(Scheme::Https) {
+            Scheme::Http => http::uri::Scheme::HTTP,
+            Scheme::Https => http::uri::Scheme::HTTPS,
 
             // We can only support http/https
             Scheme::Other(_) => return Err(types::ErrorCode::HttpProtocolError.into()),
@@ -83,21 +73,31 @@ impl outgoing_handler::Host for WasiHttpCtxView<'_> {
                 .map_err(|_| unreachable!("Infallible error"))
                 .boxed_unsync()
         });
+        let body = body.map_err(Into::into).boxed_unsync();
 
         let request = builder
             .body(body)
             .map_err(|err| internal_error(err.to_string()))?;
 
-        let future = self.hooks.send_request(
-            request,
-            OutgoingRequestConfig {
-                use_tls,
-                connect_timeout,
-                first_byte_timeout,
-                between_bytes_timeout,
-            },
-        )?;
+        let future = self
+            .hooks
+            .send_request(request, opts, Box::new(async { Ok(()) }));
+        let future = wasmtime_wasi::runtime::spawn(async move {
+            let (res, io) = Pin::from(future).await?;
+            let io = wasmtime_wasi::runtime::spawn(async move {
+                match Pin::from(io).await {
+                    Ok(()) => {}
+                    // TODO: shouldn't throw away this error and ideally should
+                    // surface somewhere.
+                    Err(e) => tracing::warn!("dropping error {e}"),
+                }
+            });
+            let res = res.map(|b| b.boxed_unsync());
+            Ok((res, io))
+        });
 
-        Ok(self.table.push(future)?)
+        Ok(self
+            .table
+            .push(HostFutureIncomingResponse::Pending(future))?)
     }
 }

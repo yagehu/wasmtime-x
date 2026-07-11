@@ -41,7 +41,7 @@ use wasmtime_environ::{
     Abi, AddressMapSection, BuiltinFunctionIndex, CacheStore, CompileError, CompiledFunctionBody,
     DefinedFuncIndex, FlagValue, FrameInstPos, FrameStackShape, FrameStateSlotBuilder,
     FrameTableBuilder, FuncKey, FunctionBodyData, FunctionLoc, GetPtrSize, HostCall,
-    InliningCompiler, ModulePC, ModuleStartup, ModuleTranslation, ModuleTypesBuilder, PtrSize,
+    InliningCompiler, ModulePC, ModuleStartup, ModuleTranslation, ModuleTypesBuilder,
     StackMapSection, StaticModuleIndex, TrapEncodingBuilder, TrapSentinel, TripleExt, Tunables,
     WasmFuncType, WasmValType, prelude::*,
 };
@@ -240,19 +240,18 @@ impl Compiler {
         );
 
         // Spill all wasm arguments to the stack in `ValRaw` slots.
-        let (args_base, args_len) =
-            self.allocate_stack_array_and_spill_args(wasm_func_ty, &mut builder, &args[2..]);
+        let (args_base, args_len) = self.allocate_stack_array_and_spill_args(
+            &mut alias_regions,
+            wasm_func_ty,
+            &mut builder,
+            &args[2..],
+        );
         let args_len = builder.ins().iconst(pointer_type, i64::from(args_len));
 
         // Load the actual callee out of the
         // `VMArrayCallHostFuncContext::host_func`.
-        let ptr_size = isa.pointer_bytes();
-        let callee = builder.ins().load(
-            pointer_type,
-            MemFlagsData::trusted(),
-            callee_vmctx,
-            ptr_size.vmarray_call_host_func_context_func_ref() + ptr_size.vm_func_ref_array_call(),
-        );
+        let callee = alias_regions
+            .vmarray_call_host_func_context_array_call(&mut builder.cursor(), callee_vmctx);
 
         // Do an indirect call to the callee.
         let callee_signature = builder.func.import_signature(array_call_sig);
@@ -284,10 +283,18 @@ impl Compiler {
         self.raise_if_host_trapped(&mut builder, &mut alias_regions, caller_vmctx, succeeded);
 
         // Return results from the array as native return values.
-        let results =
-            self.load_values_from_array(wasm_func_ty.results(), &mut builder, args_base, args_len);
+        let results = self.load_values_from_array(
+            &mut alias_regions,
+            wasm_func_ty.results(),
+            &mut builder,
+            args_base,
+            args_len,
+        );
         builder.ins().return_(&results);
         builder.finalize(self.isa().frontend_config());
+        crate::alias_region::debug_assert_all_mem_insts_have_alias_regions(
+            &compiler.cx.codegen_context.func,
+        );
 
         Ok(CompiledFunctionBody {
             code: box_dyn_any_compiler_context(Some(compiler.cx)),
@@ -398,6 +405,9 @@ impl Compiler {
             builder.ins().return_(&[]);
         }
         builder.finalize(self.isa().frontend_config());
+        crate::alias_region::debug_assert_all_mem_insts_have_alias_regions(
+            &compiler.cx.codegen_context.func,
+        );
 
         Ok(CompiledFunctionBody {
             code: box_dyn_any_compiler_context(Some(compiler.cx)),
@@ -1125,12 +1135,16 @@ impl Compiler {
     ///
     /// The stack slot pointer is returned in addition to the size, in units of
     /// `ValRaw`, of the stack slot.
-    fn allocate_stack_array_and_spill_args(
+    fn allocate_stack_array_and_spill_args<O>(
         &self,
+        alias_regions: &mut AliasRegions<O>,
         ty: &WasmFuncType,
         builder: &mut FunctionBuilder,
         args: &[ir::Value],
-    ) -> (Value, u32) {
+    ) -> (Value, u32)
+    where
+        O: GetPtrSize,
+    {
         let isa = &*self.isa;
         let pointer_type = isa.pointer_type();
 
@@ -1151,7 +1165,14 @@ impl Compiler {
             let values_vec_len = builder
                 .ins()
                 .iconst(ir::types::I32, i64::from(values_vec_len));
-            self.store_values_to_array(builder, ty.params(), args, values_vec_ptr, values_vec_len);
+            self.store_values_to_array(
+                alias_regions,
+                builder,
+                ty.params(),
+                args,
+                values_vec_ptr,
+                values_vec_len,
+            );
         }
 
         (values_vec_ptr, values_vec_len)
@@ -1163,25 +1184,33 @@ impl Compiler {
     /// using the array calling convention, or used to store results to the
     /// array when implementing a function that exposes the array calling
     /// convention.
-    fn store_values_to_array(
+    fn store_values_to_array<O>(
         &self,
+        alias_regions: &mut AliasRegions<O>,
         builder: &mut FunctionBuilder,
         types: &[WasmValType],
         values: &[Value],
         values_vec_ptr: Value,
         values_vec_capacity: Value,
-    ) {
+    ) where
+        O: GetPtrSize,
+    {
         debug_assert_eq!(types.len(), values.len());
         self.debug_assert_enough_capacity_for_length(builder, types.len(), values_vec_capacity);
+        if values.is_empty() {
+            return;
+        }
 
         // Note that loads and stores are unconditionally done in the
         // little-endian format rather than the host's native-endianness,
         // despite this load/store being unrelated to execution in Wasm itself.
         // For more details on this see the `ValRaw` type in
         // `wasmtime::runtime::vm`.
+        let region = alias_regions.host_val_raw_region(builder.func);
         let flags = ir::MemFlagsData::new()
             .with_notrap()
-            .with_endianness(ir::Endianness::Little);
+            .with_endianness(ir::Endianness::Little)
+            .with_alias_region(Some(region));
 
         let value_size = mem::size_of::<u128>();
         for (i, val) in values.iter().copied().enumerate() {
@@ -1202,23 +1231,32 @@ impl Compiler {
     /// are building exposes the array calling convention, or it can be used to
     /// load results out of the array if the trampoline we are building calls a
     /// function that uses the array calling convention.
-    fn load_values_from_array(
+    fn load_values_from_array<O>(
         &self,
+        alias_regions: &mut AliasRegions<O>,
         types: &[WasmValType],
         builder: &mut FunctionBuilder,
         values_vec_ptr: Value,
         values_vec_capacity: Value,
-    ) -> Vec<ir::Value> {
+    ) -> Vec<ir::Value>
+    where
+        O: GetPtrSize,
+    {
         let isa = &*self.isa;
         let value_size = mem::size_of::<u128>();
 
         self.debug_assert_enough_capacity_for_length(builder, types.len(), values_vec_capacity);
+        if types.is_empty() {
+            return Vec::new();
+        }
 
         // Note that this is little-endian like `store_values_to_array` above,
         // see notes there for more information.
+        let region = alias_regions.host_val_raw_region(builder.func);
         let flags = MemFlagsData::new()
             .with_notrap()
-            .with_endianness(ir::Endianness::Little);
+            .with_endianness(ir::Endianness::Little)
+            .with_alias_region(Some(region));
 
         let mut results = Vec::new();
         for (i, ty) in types.iter().enumerate() {
@@ -1318,20 +1356,15 @@ impl Compiler {
     where
         O: GetPtrSize,
     {
-        let isa = &*self.isa;
-        let pointer_type = isa.pointer_type();
-
         // Builtins are stored in an array in all `VMContext`s. First load the
-        // base pointer of the array and then load the entry of the array that
-        // corresponds to this builtin.
+        // base pointer of the array...
         let array_addr = alias_regions.vmctx_builtin_functions(&mut builder.cursor(), vmctx);
-
-        let body_offset = i32::try_from(builtin.index() * pointer_type.bytes()).unwrap();
-        let func_addr = builder.ins().load(
-            pointer_type,
-            ir::MemFlagsData::trusted().with_readonly().with_can_move(),
+        // ... and then load the entry in the array that corresponds to this
+        // builtin.
+        let func_addr = alias_regions.builtin_functions_array_element(
+            &mut builder.cursor(),
             array_addr,
-            body_offset,
+            builtin,
         );
 
         let sig = builder.func.import_signature(sig);
@@ -1421,6 +1454,7 @@ impl Compiler {
 
         // First load the actual arguments out of the array.
         let mut args = self.load_values_from_array(
+            &mut alias_regions,
             callee_sig.params(),
             &mut builder,
             values_vec_ptr,
@@ -1510,6 +1544,7 @@ impl Compiler {
         // provided and return "true" for "returned successfully".
         builder.switch_to_block(normal_return);
         self.store_values_to_array(
+            &mut alias_regions,
             &mut builder,
             callee_sig.results(),
             &normal_return_values,
@@ -1530,7 +1565,10 @@ impl Compiler {
             // `VMDeferredThread` inside an old, since-unwound stack
             // frame. Therefore, we must reset `current_thread` to avoid
             // potential use-after-free bugs.
-            let forced = builder.ins().iconst(pointer_type, 1);
+            let forced = builder.ins().iconst(
+                pointer_type,
+                i64::try_from(wasmtime_environ::VM_LAZY_THREAD_FORCED).unwrap(),
+            );
             alias_regions.store_vmstore_context_current_thread(
                 &mut builder.cursor(),
                 vm_store_ctx,
@@ -1541,6 +1579,9 @@ impl Compiler {
         builder.ins().return_(&[false_return]);
 
         builder.finalize(self.isa().frontend_config());
+        crate::alias_region::debug_assert_all_mem_insts_have_alias_regions(
+            &compiler.cx.codegen_context.func,
+        );
 
         Ok(CompiledFunctionBody {
             code: box_dyn_any_compiler_context(Some(compiler.cx)),
@@ -1561,6 +1602,7 @@ impl FunctionCompiler<'_> {
             &mut self.cx.codegen_context.func,
             self.cx.func_translator.context(),
         );
+        builder.make_stack_map_alias_region(Box::new(AliasRegions::<u8>::stack_map_region));
 
         let block0 = builder.create_block();
         builder.append_block_params_for_function_params(block0);

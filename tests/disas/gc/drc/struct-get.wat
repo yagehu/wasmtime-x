@@ -25,10 +25,10 @@
 )
 ;; function u0:0(i64 vmctx, i64, i32) -> f32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 268435488 "VMStoreContext+0x20"
-;;     region3 = 268435496 "VMStoreContext+0x28"
-;;     region4 = 2147483648 "GcHeap"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 67108896 "VMStoreContext+0x20"
+;;     region3 = 67108904 "VMStoreContext+0x28"
+;;     region4 = 536870912 "GcHeap"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -51,10 +51,10 @@
 ;;
 ;; function u0:1(i64 vmctx, i64, i32) -> i32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 268435488 "VMStoreContext+0x20"
-;;     region3 = 268435496 "VMStoreContext+0x28"
-;;     region4 = 2147483648 "GcHeap"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 67108896 "VMStoreContext+0x20"
+;;     region3 = 67108904 "VMStoreContext+0x28"
+;;     region4 = 536870912 "GcHeap"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -78,10 +78,10 @@
 ;;
 ;; function u0:2(i64 vmctx, i64, i32) -> i32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 268435488 "VMStoreContext+0x20"
-;;     region3 = 268435496 "VMStoreContext+0x28"
-;;     region4 = 2147483648 "GcHeap"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 67108896 "VMStoreContext+0x20"
+;;     region3 = 67108904 "VMStoreContext+0x28"
+;;     region4 = 536870912 "GcHeap"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -106,14 +106,15 @@
 ;; function u0:3(i64 vmctx, i64, i32) -> i32 tail {
 ;;     ss0 = explicit_slot 4, align = 4
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 268435488 "VMStoreContext+0x20"
-;;     region3 = 268435496 "VMStoreContext+0x28"
-;;     region4 = 2147483648 "GcHeap"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 67108896 "VMStoreContext+0x20"
+;;     region3 = 67108904 "VMStoreContext+0x28"
+;;     region4 = 536870912 "GcHeap"
 ;;     region5 = 32 "VMContext+0x20"
-;;     region6 = 3221225472 "VMDrcHeapData+0x0"
-;;     region7 = 3221225476 "VMDrcHeapData+0x4"
-;;     region8 = 3221225480 "VMDrcHeapData+0x8"
+;;     region6 = 805306368 "VMDrcHeapData+0x0"
+;;     region7 = 805306372 "VMDrcHeapData+0x4"
+;;     region8 = 805306376 "VMDrcHeapData+0x8"
+;;     region9 = 1543503872 "Stack(ss0)"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -131,7 +132,7 @@
 ;; @004e                               v8 = iadd v6, v7  ; v7 = 32
 ;; @004e                               v9 = load.i32 user2 little region4 v8
 ;;                                     v81 = stack_addr.i64 ss0
-;;                                     store notrap v9, v81
+;;                                     store notrap aligned region9 v9, v81
 ;; @004e                               v10 = iconst.i32 1
 ;; @004e                               v11 = band v9, v10  ; v10 = 1
 ;; @004e                               v12 = iconst.i32 0
@@ -186,6 +187,6 @@
 ;; @0052                               jump block1
 ;;
 ;;                                 block1:
-;;                                     v64 = load.i32 notrap v81
+;;                                     v64 = load.i32 notrap aligned region9 v81
 ;; @0052                               return v64
 ;; }

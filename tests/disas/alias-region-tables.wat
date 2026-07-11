@@ -17,13 +17,17 @@
 )
 ;; function u0:0(i64 vmctx, i64, i32, i64) -> i32 tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 48 "VMContext+0x30"
-;;     region3 = 2684354560 "VMTableDefinition+0x0"
-;;     region4 = 2684354568 "VMTableDefinition+0x8"
-;;     region5 = 1073741824 "PublicTable"
-;;     region6 = 1342177280 "DefinedTable(StaticModuleIndex(0), DefinedTableIndex(0))"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 1342177280 "VMTableImport+0x0"
+;;     region3 = 671088640 "VMTableDefinition+0x0"
+;;     region4 = 671088648 "VMTableDefinition+0x8"
+;;     region5 = 268435456 "PublicTable"
+;;     region6 = 335544320 "DefinedTable(StaticModuleIndex(0), DefinedTableIndex(0))"
 ;;     region7 = 40 "VMContext+0x28"
+;;     region8 = 1677721600 "TypeIdsArray+0x0"
+;;     region9 = 1610612752 "VMFuncRef+0x10"
+;;     region10 = 1610612744 "VMFuncRef+0x8"
+;;     region11 = 1610612760 "VMFuncRef+0x18"
 ;;     gv0 = vmctx
 ;;     gv1 = load.i64 notrap aligned readonly can_move region0 gv0+8
 ;;     gv2 = load.i64 notrap aligned region1 gv1+24
@@ -64,13 +68,13 @@
 ;; @004d                               jump block3(v48)
 ;;
 ;;                                 block3(v45: i64):
-;; @004d                               v51 = load.i32 user7 aligned readonly v45+16
+;; @004d                               v51 = load.i32 user7 aligned readonly region9 v45+16
 ;; @004d                               v49 = load.i64 notrap aligned readonly can_move region7 v0+40
-;; @004d                               v50 = load.i32 notrap aligned readonly can_move v49
+;; @004d                               v50 = load.i32 notrap aligned readonly can_move region8 v49
 ;; @004d                               v52 = icmp eq v51, v50
 ;; @004d                               trapz v52, user8
-;; @004d                               v54 = load.i64 notrap aligned readonly v45+8
-;; @004d                               v55 = load.i64 notrap aligned readonly v45+24
+;; @004d                               v54 = load.i64 notrap aligned readonly region10 v45+8
+;; @004d                               v55 = load.i64 notrap aligned readonly region11 v45+24
 ;; @004d                               v56 = call_indirect sig0, v54(v55, v0)
 ;; @0050                               jump block1
 ;;

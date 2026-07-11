@@ -414,15 +414,25 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         &mut self,
         func: &mut Function,
         entity: CheckedEntity,
-    ) -> Option<ir::AliasRegion> {
+    ) -> ir::AliasRegion {
         match entity {
-            CheckedEntity::Memory(index) => Some(self.memory_alias_region(func, index)),
-            CheckedEntity::Table { table, .. } => Some(self.table_alias_region(func, table)),
-            CheckedEntity::Array { .. } => Some(self.alias_regions.gc_heap_region(func)),
-            CheckedEntity::Data { .. } | CheckedEntity::RuntimeData(_) | CheckedEntity::Elem(_) => {
-                None
+            CheckedEntity::Memory(index) => self.memory_alias_region(func, index),
+            CheckedEntity::Table { table, .. } => self.table_alias_region(func, table),
+            CheckedEntity::Array { .. } => self.alias_regions.gc_heap_region(func),
+            CheckedEntity::Elem(_) => self.alias_regions.element_segment_region(func),
+            CheckedEntity::Data { .. } | CheckedEntity::RuntimeData(_) => {
+                self.alias_regions.data_segment_region(func)
             }
         }
+    }
+
+    /// Build the `MemFlags` for accessing a passive element segment's runtime
+    /// `ValRaw` storage: little-endian, tagged with the `ElementSegment` region.
+    fn element_segment_memflags(&mut self, func: &mut Function) -> ir::MemFlagsData {
+        let region = self.alias_regions.element_segment_region(func);
+        ir::MemFlagsData::trusted()
+            .with_endianness(Endianness::Little)
+            .with_alias_region(Some(region))
     }
 
     fn get_memory_atomic_wait(&mut self, func: &mut Function, ty: ir::Type) -> ir::FuncRef {
@@ -747,12 +757,8 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
 
     fn epoch_load_current(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::Value {
         let addr = builder.use_var(self.epoch_ptr_var);
-        builder.ins().load(
-            ir::types::I64,
-            ir::MemFlagsData::trusted(),
-            addr,
-            ir::immediates::Offset32::new(0),
-        )
+        self.alias_regions
+            .epoch_counter(&mut builder.cursor(), addr)
     }
 
     fn epoch_check(&mut self, builder: &mut FunctionBuilder<'_>) {
@@ -1109,36 +1115,11 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         let shared_indices = self.alias_regions.vmctx_shared_type_ids_array(pos, vmctx);
 
         // Calculate the offset in that array for this type's entry.
-        let ty = self.vmshared_type_index_ty();
-        let offset = i32::try_from(interned_ty.as_u32().checked_mul(ty.bytes()).unwrap()).unwrap();
 
         // Load the`VMSharedTypeIndex` that this `ModuleInternedTypeIndex` is
         // associated with at runtime from the array.
-        pos.ins().load(
-            ty,
-            ir::MemFlagsData::trusted().with_readonly().with_can_move(),
-            shared_indices,
-            offset,
-        )
-    }
-
-    /// Load the associated `VMSharedTypeIndex` from inside a `*const VMFuncRef`.
-    ///
-    /// Does not check for null; just assumes that the `funcref` is a valid
-    /// pointer.
-    pub(crate) fn load_funcref_type_index(
-        &mut self,
-        pos: &mut FuncCursor,
-        mem_flags: ir::MemFlagsData,
-        funcref: ir::Value,
-    ) -> ir::Value {
-        let ty = self.vmshared_type_index_ty();
-        pos.ins().load(
-            ty,
-            mem_flags,
-            funcref,
-            i32::from(self.offsets.ptr.vm_func_ref_type_index()),
-        )
+        self.alias_regions
+            .type_ids_array_element(pos, shared_indices, interned_ty)
     }
 
     /// Does this function need a GC heap?
@@ -1187,7 +1168,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         // universally supported, while native or
         // big-endian formats may not be in all cases
         // (e.g. Pulley on s390x).
-        let mut flags = MemFlagsData::trusted();
+        let mut flags = MemFlagsData::new().with_notrap();
         if ty == WasmValType::V128 {
             flags.set_endianness(Endianness::Little);
         }
@@ -1195,7 +1176,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
     }
 
     fn memflags_for_debug_slot_value_clif_ty(&self, ty: ir::Type) -> MemFlagsData {
-        let mut flags = MemFlagsData::trusted();
+        let mut flags = MemFlagsData::new().with_notrap();
         if ty.is_vector() {
             flags.set_endianness(Endianness::Little);
         }
@@ -1213,15 +1194,14 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             let offset = b.add_local(FrameValType::from(ty));
             if let Some(init) = init {
                 let slot = *slot;
+                let region = self.alias_regions.stack_slot_region(builder.func, slot);
                 let address = builder
                     .ins()
                     .stack_addr(self.pointer_type(), slot, offset.offset());
-                builder.ins().store(
-                    self.memflags_for_debug_slot_value_wasm_ty(ty),
-                    init,
-                    address,
-                    0,
-                );
+                let flags = self
+                    .memflags_for_debug_slot_value_wasm_ty(ty)
+                    .with_alias_region(Some(region));
+                builder.ins().store(flags, init, address, 0);
             }
         }
     }
@@ -1265,16 +1245,15 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
                     self.stacks.stack_shape.push(this_shape);
 
                     let value = self.stacks.stack[i];
+                    let region = self.alias_regions.stack_slot_region(builder.func, slot);
                     let address =
                         builder
                             .ins()
                             .stack_addr(self.pointer_type(), slot, offset.offset());
-                    builder.ins().store(
-                        self.memflags_for_debug_slot_value_wasm_ty(wasm_ty),
-                        value,
-                        address,
-                        0,
-                    );
+                    let flags = self
+                        .memflags_for_debug_slot_value_wasm_ty(wasm_ty)
+                        .with_alias_region(Some(region));
+                    builder.ins().store(flags, value, address, 0);
                 } else {
                     // Unreachable code with unknown type -- no
                     // flushes for this or later-pushed values.
@@ -1324,40 +1303,45 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
 
     /// Store a new value for a local in the state slot, if present.
     pub(crate) fn state_slot_local_set(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         local: u32,
         value: ir::Value,
     ) {
-        if let Some((slot, b)) = &self.state_slot {
-            let offset = b.local_offset(local);
-            let address = builder
-                .ins()
-                .stack_addr(self.pointer_type(), *slot, offset.offset());
-            let ty = builder.func.dfg.value_type(value);
-            builder.ins().store(
-                self.memflags_for_debug_slot_value_clif_ty(ty),
-                value,
-                address,
-                0,
-            );
-        }
+        let Some((slot, offset)) = self
+            .state_slot
+            .as_ref()
+            .map(|(slot, b)| (*slot, b.local_offset(local)))
+        else {
+            return;
+        };
+        let region = self.alias_regions.stack_slot_region(builder.func, slot);
+        let address = builder
+            .ins()
+            .stack_addr(self.pointer_type(), slot, offset.offset());
+        let ty = builder.func.dfg.value_type(value);
+        let flags = self
+            .memflags_for_debug_slot_value_clif_ty(ty)
+            .with_alias_region(Some(region));
+        builder.ins().store(flags, value, address, 0);
     }
 
     fn update_state_slot_vmctx(&mut self, builder: &mut FunctionBuilder) {
         if let &Some((slot, _)) = &self.state_slot {
             let vmctx = self.vmctx_val(&mut builder.cursor());
-            // N.B.: we always store vmctx at offset 0 in the
-            // slot. This is relied upon in
-            // crates/wasmtime/src/runtime/debug.rs in
-            // `raw_instance()`. See also the slot layout computation in crates/environ/src/
+            // N.B.: we always store vmctx at offset 0 in the slot. This is
+            // relied upon in `crates/wasmtime/src/runtime/debug.rs` in
+            // `raw_instance()`. See also the slot layout computation in
+            // `crates/environ/src/`.
             //
-            // This is a native-endian store (the only mode for
-            // `stack_store`) because it is read by host code directly
-            // as a pointer.
-            builder
-                .ins()
-                .stack_store(self.pointer_type(), vmctx, slot, 0);
+            // This is a native-endian store because it is read by host code
+            // directly as a pointer.
+            let region = self.alias_regions.stack_slot_region(builder.func, slot);
+            let address = builder.ins().stack_addr(self.pointer_type(), slot, 0);
+            let flags = ir::MemFlagsData::new()
+                .with_notrap()
+                .with_alias_region(Some(region));
+            builder.ins().store(flags, vmctx, address, 0);
         }
     }
 
@@ -2305,9 +2289,11 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
             self.env
                 .trapz(self.builder, funcref_ptr, crate::TRAP_INDIRECT_CALL_TO_NULL);
         }
-        let callee_sig_id =
-            self.env
-                .load_funcref_type_index(&mut self.builder.cursor(), mem_flags, funcref_ptr);
+        let callee_sig_id = self.env.alias_regions.vmfuncref_type_index(
+            &mut self.builder.cursor(),
+            mem_flags,
+            funcref_ptr,
+        );
 
         // Check that they match: in the case of Wasm GC, this means doing a
         // full subtype check. Otherwise, we do a simple equality check.
@@ -2358,8 +2344,6 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
         callee: ir::Value,
         callee_load_trap_code: Option<ir::TrapCode>,
     ) -> (ir::Value, ir::Value) {
-        let pointer_type = self.env.pointer_type();
-
         // Dereference callee pointer to get the function address.
         //
         // Note that this may trap if `callee` hasn't previously been verified
@@ -2376,18 +2360,15 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
                 self.env.trapz(self.builder, callee, trap);
             }
         }
-        let func_addr = self.builder.ins().load(
-            pointer_type,
+        let func_addr = self.env.alias_regions.vmfuncref_wasm_call(
+            &mut self.builder.cursor(),
             callee_flags,
             callee,
-            i32::from(self.env.offsets.ptr.vm_func_ref_wasm_call()),
         );
-        let callee_vmctx = self.builder.ins().load(
-            pointer_type,
-            mem_flags,
-            callee,
-            i32::from(self.env.offsets.ptr.vm_func_ref_vmctx()),
-        );
+        let callee_vmctx =
+            self.env
+                .alias_regions
+                .vmfuncref_vmctx(&mut self.builder.cursor(), mem_flags, callee);
 
         (func_addr, callee_vmctx)
     }
@@ -4662,9 +4643,7 @@ impl FuncEnvironment<'_> {
                         let WasmStorageType::Val(WasmValType::Ref(ty)) = write_ty else {
                             unreachable!();
                         };
-                        // `ValRaw` is always stored as little-endian
-                        let mut flags = ir::MemFlagsData::trusted();
-                        flags.set_endianness(Endianness::Little);
+                        let flags = this.element_segment_memflags(builder.func);
 
                         match ty.heap_type.top() {
                             WasmHeapTopType::Func => {
@@ -4746,8 +4725,8 @@ impl FuncEnvironment<'_> {
         dst_addr: ir::Value,
         src_addr: ir::Value,
         bytes: u64,
-        src_region: Option<ir::AliasRegion>,
-        dst_region: Option<ir::AliasRegion>,
+        src_region: ir::AliasRegion,
+        dst_region: ir::AliasRegion,
     ) {
         // `trusted()` (notrap + aligned) is sound: the range is already
         // bounds-checked, and each load feeds only its paired store, so the
@@ -4763,10 +4742,10 @@ impl FuncEnvironment<'_> {
         // region-tagged store to the same address.
         let load_flags = ir::MemFlagsData::trusted()
             .with_endianness(Endianness::Little)
-            .with_alias_region(src_region);
+            .with_alias_region(Some(src_region));
         let store_flags = ir::MemFlagsData::trusted()
             .with_endianness(Endianness::Little)
-            .with_alias_region(dst_region);
+            .with_alias_region(Some(dst_region));
         const WIDTHS: &[(u64, ir::Type)] = &[
             (16, ir::types::I8X16),
             (8, ir::types::I64),
@@ -5928,13 +5907,11 @@ impl FuncEnvironment<'_> {
         let call = builder.ins().call(libcall, &[vmctx, idx]);
         let base = builder.func.dfg.first_result(call);
 
-        // Values in `ValRaw` are always stored in little-endian.
-        let flags = ir::MemFlagsData::trusted().with_endianness(Endianness::Little);
-
         match exprs {
             TableSegmentElements::Functions(indices) => {
                 for (i, func) in indices.iter().enumerate() {
                     let func = self.translate_ref_func(builder.cursor(), *func)?;
+                    let flags = self.element_segment_memflags(builder.func);
                     builder.ins().store(
                         flags,
                         func,
@@ -5950,10 +5927,11 @@ impl FuncEnvironment<'_> {
                     let dst = builder
                         .ins()
                         .iadd_imm_s(base, i64::try_from(i.checked_mul(16).unwrap()).unwrap());
+                    let flags = self.element_segment_memflags(builder.func);
                     match ty.heap_type.top() {
                         WasmHeapTopType::Extern | WasmHeapTopType::Any | WasmHeapTopType::Exn => {
-                            let ty = WasmStorageType::Val(WasmValType::Ref(*ty));
-                            gc::init_field_at_addr(self, builder, ty, dst, val)?;
+                            gc::gc_compiler(self)?
+                                .translate_init_gc_reference(self, builder, *ty, dst, val, flags)?;
                         }
                         WasmHeapTopType::Func | WasmHeapTopType::Cont => {
                             builder.ins().store(

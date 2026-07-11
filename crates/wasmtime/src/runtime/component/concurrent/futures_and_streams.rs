@@ -908,7 +908,7 @@ impl<'a, T> Source<'a, T> {
                 bail_bug!("expected WriteState::GuestReady");
             };
 
-            let cx = &mut LiftContext::new(store.0.store_opaque_mut(), options, instance);
+            let cx = &mut LiftContext::new(store.0.store_opaque_mut(), options, instance)?;
             let ty = ty.payload(cx.types);
             let old_remaining = buffer.remaining_capacity();
             lift::<T, B>(
@@ -3327,7 +3327,7 @@ impl Instance {
 
                 let val = write_payload_ty
                     .map(|ty| {
-                        let lift = &mut LiftContext::new(store, write_options, write_instance);
+                        let lift = &mut LiftContext::new(store, write_options, write_instance)?;
                         let bytes = &lift.memory()[write_address..][..write_length_in_bytes];
                         Val::load(lift, *ty, bytes)
                     })
@@ -3406,7 +3406,7 @@ impl Instance {
                     }
                 } else {
                     let store_opaque = store.store_opaque_mut();
-                    let lift = &mut LiftContext::new(store_opaque, write_options, write_instance);
+                    let lift = &mut LiftContext::new(store_opaque, write_options, write_instance)?;
                     let bytes = &lift.memory()[write_address..][..write_length_in_bytes];
                     lift.consume_fuel_array(count, size_of::<Val>())?;
 
@@ -3997,6 +3997,10 @@ impl Instance {
         );
         let waitable = Waitable::Transmit(transmit.write_handle);
 
+        if !async_ {
+            waitable.trap_if_in_waitable_set(state)?;
+        }
+
         let code = if let Some(event) = waitable.take_event(state)? {
             let (Event::FutureWrite { code, .. } | Event::StreamWrite { code, .. }) = event else {
                 bail_bug!("expected either a stream or future write event")
@@ -4084,6 +4088,11 @@ impl Instance {
         );
 
         let waitable = Waitable::Transmit(transmit.read_handle);
+
+        if !async_ {
+            waitable.trap_if_in_waitable_set(state)?;
+        }
+
         let code = if let Some(event) = waitable.take_event(state)? {
             let (Event::FutureRead { code, .. } | Event::StreamRead { code, .. }) = event else {
                 bail_bug!("expected either a stream or future read event")
@@ -4251,7 +4260,7 @@ impl Instance {
         debug_msg_address: u32,
         debug_msg_len: u32,
     ) -> Result<u32> {
-        let lift_ctx = &mut LiftContext::new(store, options, self);
+        let lift_ctx = &mut LiftContext::new(store, options, self)?;
         let debug_msg = String::linear_lift_from_flat(
             lift_ctx,
             InterfaceType::String,

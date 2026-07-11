@@ -539,8 +539,8 @@ where
     /// otherwise returns `Poll::Pending`. If pending is returned then whenever
     /// the last remaining "interesting" task has exited the provided context's
     /// waker will be notified. Note that only the waker passed to the last call
-    /// to `poll_no_interesting_tasks` will be notified, so this is only
-    /// appropriate to use one-at-a-time.
+    /// to `poll_no_interesting_tasks` for the store will be notified, so this
+    /// is only appropriate to use once-at-a-time per store.
     ///
     /// The component model specification, as of this current date, does not
     /// have a distinction between "interesting" tasks and not. The current
@@ -575,6 +575,39 @@ where
                 Poll::Ready(())
             } else {
                 state.interesting_tasks_empty_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+    }
+
+    /// Poll to see if the component instance corresponding to the specified
+    /// function is ready to run a concurrent call without queuing it (i.e. does
+    /// not have backpressure enabled and does not have a sync call in
+    /// progress).
+    ///
+    /// Returns `Poll::Ready(())` if the component instance is ready to run a
+    /// concurrent call, and otherwise returns `Poll::Pending`.  If pending is
+    /// returned then whenever the instance becomes ready for a call the
+    /// provided context's waker will be notified.  Note that only the waker
+    /// passed to the last call to `poll_ready_for_concurrent_call` for the
+    /// store will be notified (regardless of whether the same or different
+    /// `Func` is specified relative to earlier calls), so this is only
+    /// appropriate to use once-at-a-time per store.  Also note that the waker
+    /// may be notified when _any_ instance becomes callable (i.e. not
+    /// necessarily the last one polled), so this function must be called again
+    /// to determine if the instance of interest is ready.
+    pub fn poll_ready_for_concurrent_call(&self, func: Func, cx: &mut Context<'_>) -> Poll<()> {
+        self.with(|mut access| {
+            let store = access.as_context_mut().0;
+            let (_, _, _, raw_options) = func.abi_info(store);
+            let instance = func.instance().runtime_instance(raw_options.instance);
+            let state = store.instance_state(instance).concurrent_state();
+            if state.backpressure == 0 {
+                Poll::Ready(())
+            } else {
+                store
+                    .concurrent_state_mut_without_forcing_current_thread()
+                    .ready_for_concurrent_call_waker = Some(cx.waker().clone());
                 Poll::Pending
             }
         })
@@ -1983,6 +2016,9 @@ impl StoreOpaque {
     /// Iterate over `InstanceState::pending`, moving any ready items into the
     /// "high priority" work item queue.
     ///
+    /// Also, notify `ConcurrentState::ready_for_concurrent_call_waker` if
+    /// present.
+    ///
     /// See `GuestCall::is_ready` for details.
     fn partition_pending(&mut self, instance: RuntimeInstance) -> Result<()> {
         for (thread, kind) in
@@ -1998,6 +2034,14 @@ impl StoreOpaque {
                     .pending
                     .insert(call.thread, call.kind);
             }
+        }
+
+        if let Some(waker) = self
+            .concurrent_state_mut()?
+            .ready_for_concurrent_call_waker
+            .take()
+        {
+            waker.wake();
         }
 
         Ok(())
@@ -2149,9 +2193,7 @@ impl StoreOpaque {
         let caller = self.current_guest_thread()?;
         let state = self.concurrent_state_mut()?;
 
-        if waitable.common(state)?.set.is_some() {
-            bail!(Trap::WaitableSyncAndAsync);
-        }
+        waitable.trap_if_in_waitable_set(state)?;
 
         let set = state.get_mut(caller.thread)?.sync_call_set;
         waitable.join(state, Some(set))?;
@@ -2295,6 +2337,21 @@ impl StoreOpaque {
             bail!(Trap::SubtaskCancelAfterTerminal);
         }
         Ok(())
+    }
+
+    /// Used by `ResourceTables` to record the scope of a borrow to get undone
+    /// in the future.
+    pub(crate) fn current_scope_id(&mut self) -> Result<Option<u32>> {
+        if !self.concurrency_support() {
+            return self.current_scope_id_not_concurrent();
+        }
+        let (bits, is_host) = match self.current_thread()? {
+            CurrentThread::Guest(id) => (id.task.rep(), false),
+            CurrentThread::Host(id) => (id.rep(), true),
+            CurrentThread::None => return Ok(None),
+        };
+        assert_eq!((bits << 1) >> 1, bits);
+        Ok(Some((bits << 1) | u32::from(is_host)))
     }
 }
 
@@ -3911,6 +3968,10 @@ impl Instance {
 
         log::trace!("subtask_cancel {waitable:?} (handle {task_id})");
 
+        if !async_ {
+            waitable.trap_if_in_waitable_set(concurrent_state)?;
+        }
+
         let needs_block;
         if let Waitable::Host(host_task) = waitable {
             let state = &mut concurrent_state.get_mut(host_task)?.state;
@@ -5001,6 +5062,18 @@ impl Waitable {
         })
     }
 
+    /// Trap if this waitable is currently a member of a waitable set.
+    ///
+    /// A synchronous stream/future/subtask operation may end up blocking on
+    /// this waitable, so it is not allowed to run while the waitable is also
+    /// being watched by a waitable set.
+    fn trap_if_in_waitable_set(&self, state: &mut ConcurrentState) -> Result<()> {
+        if self.common(state)?.set.is_some() {
+            bail!(Trap::WaitableSyncAndAsync);
+        }
+        Ok(())
+    }
+
     /// Set or clear the pending event for this waitable and either deliver it
     /// to the first waiter, if any, or mark it as ready to be delivered to the
     /// next waiter that arrives.
@@ -5245,6 +5318,12 @@ pub struct ConcurrentState {
     ///
     /// Used in the implementation of `Accessor::poll_no_interesting_tasks`.
     interesting_tasks_empty_waker: Option<Waker>,
+
+    /// Single waker to notify when a component instance goes from
+    /// not-concurrently-callable to concurrently-callable.
+    ///
+    /// Used in the implementation of `Accessor::poll_ready_for_concurrent_call`.
+    ready_for_concurrent_call_waker: Option<Waker>,
 }
 
 impl Default for ConcurrentState {
@@ -5261,6 +5340,7 @@ impl Default for ConcurrentState {
             global_error_context_ref_counts: BTreeMap::new(),
             interesting_tasks: 0,
             interesting_tasks_empty_waker: None,
+            ready_for_concurrent_call_waker: None,
         }
     }
 }
@@ -5359,6 +5439,7 @@ impl ConcurrentState {
             global_error_context_ref_counts: _,
             interesting_tasks: _,
             interesting_tasks_empty_waker: _,
+            ready_for_concurrent_call_waker: _,
         } = self;
 
         for entry in table.get_mut().iter_mut() {
@@ -5533,18 +5614,6 @@ impl ConcurrentState {
             let task: TableId<GuestTask> = TableId::new(task);
             Ok(&mut self.get_mut(task)?.call_context)
         }
-    }
-
-    /// Used by `ResourceTables` to record the scope of a borrow to get undone
-    /// in the future.
-    pub fn current_call_context_scope_id(&self) -> Result<u32> {
-        let (bits, is_host) = match self.unforced_current_thread {
-            CurrentThread::Guest(id) => (id.task.rep(), false),
-            CurrentThread::Host(id) => (id.rep(), true),
-            CurrentThread::None => bail_bug!("current thread is not set"),
-        };
-        assert_eq!((bits << 1) >> 1, bits);
-        Ok((bits << 1) | u32::from(is_host))
     }
 
     fn futures_mut(&mut self) -> Result<&mut FuturesUnordered<HostTaskFuture>> {

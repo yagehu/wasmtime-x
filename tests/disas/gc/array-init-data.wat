@@ -15,10 +15,10 @@
 )
 ;; function u0:0(i64 vmctx, i64, i32, i32, i32, i32) tail {
 ;;     region0 = 8 "VMContext+0x8"
-;;     region1 = 268435480 "VMStoreContext+0x18"
-;;     region2 = 268435488 "VMStoreContext+0x20"
-;;     region3 = 268435496 "VMStoreContext+0x28"
-;;     region4 = 2147483648 "GcHeap"
+;;     region1 = 67108888 "VMStoreContext+0x18"
+;;     region2 = 67108896 "VMStoreContext+0x20"
+;;     region3 = 67108904 "VMStoreContext+0x28"
+;;     region4 = 536870912 "GcHeap"
 ;;     region5 = 56 "VMContext+0x38"
 ;;     region6 = 48 "VMContext+0x30"
 ;;     gv0 = vmctx
